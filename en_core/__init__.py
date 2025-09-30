@@ -1,0 +1,1 @@
+# This file makes en_core a Python package.
