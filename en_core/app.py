@@ -1,7 +1,8 @@
 import sys
-from PySide6.QtWidgets import QApplication, QMainWindow, QDockWidget
+from PySide6.QtWidgets import QApplication, QMainWindow
 from .plugin_manager import PluginManager
 from .api import AppContext
+from .ui_manager import UIManager
 
 class MainWindow(QMainWindow):
     """
@@ -11,7 +12,7 @@ class MainWindow(QMainWindow):
     """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EvoNote V0.1")
+        self.setWindowTitle("EvoNote V0.2")
         self.setCentralWidget(None)  # Prepare for QDockWidget
 
         # As per FR-1.1, the central area must be a dock area.
@@ -30,7 +31,8 @@ class EvoNoteApp:
     def __init__(self):
         self.qt_app = QApplication(sys.argv)
         self.main_window = MainWindow()
-        self.app_context = AppContext(self.main_window)
+        self.ui_manager = UIManager(self.main_window)
+        self.app_context = AppContext(self.ui_manager)
         self.plugin_manager = PluginManager(self.app_context)
 
     def run(self):
