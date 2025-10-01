@@ -62,9 +62,9 @@ EvoNote/
 │   ├── plugin_manager.py # 插件发现与加载逻辑
 │   └── ui_manager.py     # 插件与主窗口UI交互的管理器
 ├── plugins/              # 存放所有外部插件的目录
-│   ├── file_browser_plugin.py
-│   ├── editor_placeholder_plugin.py
-│   └── statusbar_test_plugin.py
+│   ├── file_browser_plugin.py       # 提供左侧文件浏览器面板的插件
+│   ├── editor_placeholder_plugin.py   # 提供右侧编辑器占位符面板的插件
+│   └── statusbar_test_plugin.py     # 在状态栏显示消息的测试插件
 └── main.py               # 应用主入口文件
 ```
 
