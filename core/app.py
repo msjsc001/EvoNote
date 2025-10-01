@@ -1,8 +1,9 @@
 import sys
 from PySide6.QtWidgets import QApplication, QMainWindow
 from .plugin_manager import PluginManager
-from .api import AppContext
 from .ui_manager import UIManager
+
+VERSION = "0.3.0"
 
 class MainWindow(QMainWindow):
     """
@@ -12,7 +13,7 @@ class MainWindow(QMainWindow):
     """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EvoNote V0.2")
+        self.setWindowTitle(f"EvoNote V{VERSION}")
         self.setCentralWidget(None)  # Prepare for QDockWidget
 
         # As per FR-1.1, the central area must be a dock area.
@@ -32,16 +33,20 @@ class EvoNoteApp:
         self.qt_app = QApplication(sys.argv)
         self.main_window = MainWindow()
         self.ui_manager = UIManager(self.main_window)
-        self.app_context = AppContext(self.ui_manager)
-        self.plugin_manager = PluginManager(self.app_context)
+        self.plugin_manager = PluginManager()
 
     def run(self):
         """
         Loads plugins, shows the main window, and starts the event loop.
         """
         self.plugin_manager.discover_and_load_plugins()
-        """
-        Shows the main window and starts the application's event loop.
-        """
+        
+        # In App.__init__ after loading plugins
+        all_plugins = self.plugin_manager.get_all_plugins()
+        for plugin in all_plugins:
+            widget = plugin.get_widget()
+            if widget:
+                self.ui_manager.add_widget(widget) # Assuming ui_manager has this method
+        
         self.main_window.show()
         return self.qt_app.exec()

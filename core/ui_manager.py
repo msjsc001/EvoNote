@@ -29,3 +29,11 @@ class UIManager:
             raise TypeError("dock_widget must be an instance of QDockWidget")
         
         self._main_window.addDockWidget(area, dock_widget)
+
+    def add_widget(self, widget: QDockWidget):
+        """
+        Adds a QDockWidget to the main window. This is an alias for add_dock_widget.
+
+        :param widget: The QDockWidget instance to add.
+        """
+        self.add_dock_widget(widget)

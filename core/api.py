@@ -26,3 +26,10 @@ class AppContext:
         Note: For adding UI elements like docks, prefer using the `ui` manager.
         """
         return self.ui._main_window
+
+
+class Plugin:
+    """
+    Base class for all plugins.
+    """
+    pass
