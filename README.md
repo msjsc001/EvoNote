@@ -5,7 +5,7 @@
 
 EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个人知识与自动化工作台。它被设计成通过强大的插件架构实现无限扩展。
 
-## 当前状态 (V0.4.0 - 索引与链接基础)
+## 当前状态 (V0.4.0.1 - 索引与链接基础)
 
 此版本完成了 EvoNote 的**后台数据处理核心**。我们构建了一个能够监控文件系统、建立和维护 SQLite 数据库与 Whoosh 全文索引的异步服务。
 
@@ -52,44 +52,49 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
     python main.py
     ```
 
-## 项目结构 (V0.4.0)
+## 项目结构 (V0.4.0.1)
 
 ```
 EvoNote/
-├── .enotes/                # [运行时生成] 存放索引、数据库等缓存文件
-├── core/                   # 核心微内核代码
-│   ├── __init__.py         # 包初始化文件
-│   ├── api.py              # 为插件提供的公共API上下文 (未使用)
-│   ├── app.py              # 应用主类(EvoNoteApp)和主窗口(MainWindow)
-│   ├── parsing_service.py  # 提供Markdown到AST的解析功能
-│   ├── plugin_manager.py   # 负责动态发现、加载和管理所有插件
-│   ├── rendering_service.py# 提供AST到QTextDocument的渲染功能 (为未来保留)
-│   └── ui_manager.py       # 管理插件UI与主窗口的交互
+├── .enotes/                        # [运行时生成] 存放索引、数据库等缓存文件
+├── core/                           # 核心微内核代码目录
+│   ├── __init__.py                 # Python包初始化文件
+│   ├── api.py                      # 为插件提供的公共API上下文 (当前版本未使用)
+│   ├── app.py                      # 应用主类(EvoNoteApp)和主窗口(MainWindow)定义
+│   ├── parsing_service.py          # 提供Markdown到AST的解析功能
+│   ├── plugin_manager.py           # 负责动态发现、加载和管理所有插件
+│   ├── rendering_service.py        # 提供AST到QTextDocument的渲染功能 (为未来保留)
+│   └── ui_manager.py               # 管理插件UI与主窗口的交互逻辑
 │
-├── plugins/                # 存放所有插件的目录
-│   ├── editable_editor/    # [核心] 响应式编辑器插件
-│   │   └── main.py         #   - 实现ReactiveEditor控件和插件入口
-│   ├── editor_plugin_interface.py # 定义所有编辑器插件必须遵守的接口
-│   ├── file_browser_plugin.py     # 提供文件浏览器DockWidget的插件 (未使用)
-│   ├── statusbar_test_plugin.py   # 在状态栏显示消息的简单示例插件
-│   ├── _broken_plugin.py   # 用于测试插件加载器容错性的损坏插件示例
-│   └── .gitkeep            # 确保空目录可以被git追踪
+├── plugins/                        # 存放所有插件的目录
+│   ├── editable_editor/            # [核心] 响应式编辑器插件目录
+│   │   └── main.py                 #   - 实现ReactiveEditor控件和插件入口
+│   ├── editor_plugin_interface.py  # 定义所有编辑器插件必须遵守的接口
+│   ├── file_browser_plugin.py      # 提供文件浏览器DockWidget的插件 (当前版本未使用)
+│   ├── statusbar_test_plugin.py    # 在状态栏显示消息的简单示例插件
+│   ├── _broken_plugin.py           # 用于测试插件加载器容错性的损坏插件示例
+│   └── .gitkeep                    # 确保空目录可以被git追踪
 │
-├── services/               # 后台服务目录
-│   ├── __init__.py         # 包初始化文件
-│   └── file_indexer_service.py # 核心文件索引与监控服务
+├── services/                       # 后台服务目录
+│   ├── __init__.py                 # Python包初始化文件
+│   └── file_indexer_service.py     # 核心文件索引与监控服务，处理文件事件、数据库和Whoosh索引
 │
-├── tests/                  # 单元测试目录
+├── tests/                          # 单元测试目录 (当前版本未包含详细测试文件)
 │
-├── .gitignore              # Git忽略文件配置
-├── main.py                 # 应用主入口点
-├── README.md               # 项目说明文件
-└── requirements.txt        # 项目的所有Python依赖
+├── .gitignore                      # Git版本控制忽略文件配置
+├── main.py                         # 应用主入口点，启动EvoNote应用
+├── README.md                       # 项目说明文件
+├── requirements.txt                # 项目的所有Python依赖列表
+└── pressure_test.py                # UI响应性压力测试脚本 (验收测试时创建)
 ```
 
 ## 更新日志
 
-### V0.4.0 (2025-10-02) - 索引与链接基础
+### V0.4.0.1 (2025-10-02) - 索引与链接基础 (验收完成)
+- **修复**: 解决了文件修改时链接重复索引的 Bug。
+- **修复**: 解决了文件删除时链接数据残留的 Bug。
+- **修复**: 彻底重构了文件重命名逻辑，确保了 `files` 表和 `links` 表的数据原子性更新。
+- **验收**: 所有功能性 (FR) 和非功能性 (NFR) 需求均已通过验收测试。
 - **新功能**: 实现了完整的后台文件监控、数据库和全文索引服务。
 - **架构**: 引入了基于任务队列的异步处理模型，确保UI流畅。
 - **依赖**: 添加了 `watchdog` 和 `whoosh`。

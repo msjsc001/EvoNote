@@ -143,6 +143,7 @@ class FileIndexerService:
 
     def _handle_upsert(self, file_path_str: str):
         """Handles file creation and modification."""
+        logging.warning("<<<<< EXECUTING MODIFIED UPSERT HANDLER >>>>>")
         logging.info(f"Processing upsert for: {file_path_str}")
         file_path = Path(file_path_str)
         
@@ -156,16 +157,28 @@ class FileIndexerService:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
-            cursor.execute("INSERT OR REPLACE INTO files (path, modified_time) VALUES (?, ?)", (file_path_str, modified_time))
-            file_id = cursor.lastrowid
-            
-            # Clear old links
-            cursor.execute("DELETE FROM links WHERE source_id = ?", (file_id,))
+            file_id = None
+            cursor.execute("SELECT id FROM files WHERE path = ?", (file_path_str,))
+            result = cursor.fetchone()
 
+            if result:
+                file_id = result[0]
+                cursor.execute("UPDATE files SET modified_time = ? WHERE id = ?", (modified_time, file_id))
+                logging.info(f"Updated existing file record for ID: {file_id}, Path: {file_path_str}")
+            else:
+                cursor.execute("INSERT INTO files (path, modified_time) VALUES (?, ?)", (file_path_str, modified_time))
+                file_id = cursor.lastrowid
+                logging.info(f"Inserted new file record with ID: {file_id}, Path: {file_path_str}")
+            
+            # Clear existing links for this file using the obtained file_id
+            cursor.execute("DELETE FROM links WHERE source_id = ?", (file_id,))
+            logging.info(f"Cleared old links for file ID: {file_id}")
+            
             # Find and insert new links
             links = re.findall(r"\[\[(.+?)\]\]", content)
             for target_path in links:
                 cursor.execute("INSERT INTO links (source_id, target_path) VALUES (?, ?)", (file_id, target_path))
+            logging.info(f"Inserted {len(links)} new links for file ID: {file_id}")
 
             conn.commit()
             conn.close()
@@ -186,13 +199,32 @@ class FileIndexerService:
         """Handles file deletion."""
         logging.info(f"Processing delete for: {file_path_str}")
         try:
-            # --- Database Operation ---
+            # --- Database Operations ---
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
+
+            # 1. Query file_id before deleting files table record
+            file_id = None
+            cursor.execute("SELECT id FROM files WHERE path = ?", (file_path_str,))
+            result = cursor.fetchone()
+            if result:
+                file_id = result
+                logging.info(f"Found file_id: {file_id} for path: {file_path_str}")
+            else:
+                logging.warning(f"File ID not found for path: {file_path_str}. No links to delete.")
+
+            # 2. Delete related links records if file_id was found
+            if file_id:
+                cursor.execute("DELETE FROM links WHERE source_id = ?", (file_id,))
+                logging.info(f"Deleted links records for source_id: {file_id}")
+
+            # 3. Delete the file record
             cursor.execute("DELETE FROM files WHERE path = ?", (file_path_str,))
+            logging.info(f"Deleted file record for path: {file_path_str}")
+            
             conn.commit()
             conn.close()
-            logging.info(f"Deleted records from database for: {file_path_str}")
+            logging.info(f"Database operations completed for delete of: {file_path_str}")
 
             # --- Whoosh Index Operation ---
             writer = self.whoosh_index.writer()
@@ -210,25 +242,57 @@ class FileIndexerService:
             # --- Database Operations (in a single transaction) ---
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
+            conn.isolation_level = None # Enable autocommit mode, or manage transactions manually
 
-            # Update the path in the 'files' table
-            cursor.execute("UPDATE files SET path = ? WHERE path = ?", (dest_path_str, src_path_str))
-            
-            # Update any links that were pointing to the old path
-            cursor.execute("UPDATE links SET target_path = ? WHERE target_path = ?", (dest_path_str, src_path_str))
+            try:
+                cursor.execute("BEGIN") # Start a transaction
+                
+                # Update the path in the 'files' table
+                cursor.execute("UPDATE files SET path = ? WHERE path = ?", (dest_path_str, src_path_str))
+                logging.info(f"Database: Updated files table: {src_path_str} -> {dest_path_str}")
+                
+                # Extract target names without .md extension
+                old_target_name = Path(src_path_str).stem
+                new_target_name = Path(dest_path_str).stem
+                
+                # Update any links that were pointing to the old path
+                cursor.execute("UPDATE links SET target_path = ? WHERE target_path = ?", (new_target_name, old_target_name))
+                logging.info(f"Database: Updated links table: {old_target_name} -> {new_target_name}")
+                
+                cursor.execute("COMMIT") # Commit the transaction
+                logging.info(f"Database: Transaction committed for move from {src_path_str} to {dest_path_str}")
 
-            conn.commit()
-            conn.close()
-            logging.info(f"Updated database for move from {src_path_str} to {dest_path_str}")
+            except Exception as db_e:
+                cursor.execute("ROLLBACK") # Rollback on error
+                logging.error(f"Database: Transaction rolled back due to error: {db_e}")
+                raise db_e # Re-raise the exception to be caught by the outer try-except
+            finally:
+                conn.close()
+                logging.info("Database: Connection closed.")
 
             # --- Whoosh Index Operations ---
-            # Re-index the content at the new path, and delete the old record
-            self._handle_delete(src_path_str) # This takes care of deleting the old whoosh doc
-            self._handle_upsert(dest_path_str) # This creates the new whoosh doc
-            logging.info(f"Updated Whoosh index for move.")
+            logging.info(f"Whoosh: Processing index update for move from {src_path_str} to {dest_path_str}")
+            writer = self.whoosh_index.writer()
+            try:
+                # Delete old document
+                writer.delete_by_term('path', src_path_str)
+                logging.info(f"Whoosh: Deleted old document for path: {src_path_str}")
 
+                # Add new document
+                dest_file_path = Path(dest_path_str)
+                with open(dest_file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                writer.add_document(path=dest_path_str, content=content)
+                logging.info(f"Whoosh: Added new document for path: {dest_path_str}")
+                
+                writer.commit()
+                logging.info(f"Whoosh: Index committed for move.")
+            except Exception as whoosh_e:
+                writer.abort()
+                logging.error(f"Whoosh: Index update aborted due to error: {whoosh_e}")
+                raise whoosh_e # Re-raise the exception to be caught by the outer try-except
         except Exception as e:
-            logging.error(f"Failed to handle move for {src_path_str}: {e}")
+            logging.error(f"Failed to handle move from {src_path_str} to {dest_path_str}: {e}")
 
 class EventHandler(FileSystemEventHandler):
     def __init__(self, task_queue: queue.Queue):
