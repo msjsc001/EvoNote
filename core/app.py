@@ -2,8 +2,9 @@ import sys
 from PySide6.QtWidgets import QApplication, QMainWindow
 from .plugin_manager import PluginManager
 from .ui_manager import UIManager
+from services.file_indexer_service import FileIndexerService
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 class MainWindow(QMainWindow):
     """
@@ -34,11 +35,13 @@ class EvoNoteApp:
         self.main_window = MainWindow()
         self.ui_manager = UIManager(self.main_window)
         self.plugin_manager = PluginManager()
+        self.file_indexer_service = FileIndexerService(vault_path=".")
 
     def run(self):
         """
         Loads plugins, shows the main window, and starts the event loop.
         """
+        self.file_indexer_service.start()
         self.plugin_manager.discover_and_load_plugins()
         
         # In App.__init__ after loading plugins
@@ -49,4 +52,7 @@ class EvoNoteApp:
                 self.ui_manager.add_widget(widget) # Assuming ui_manager has this method
         
         self.main_window.show()
-        return self.qt_app.exec()
+        
+        exit_code = self.qt_app.exec()
+        self.file_indexer_service.stop()
+        return exit_code

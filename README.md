@@ -1,34 +1,31 @@
 # EvoNote - 可进化的笔记与自动化平台
 
-[
 
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-
-](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个人知识与自动化工作台。它被设计成通过强大的插件架构实现无限扩展。
 
-## 当前状态 (V0.3.2 - 响应式编辑器内核)
+## 当前状态 (V0.4.0 - 索引与链接基础)
 
-当前版本实现了一个**绝对稳健、行为符合原生体验的**可编辑文本核心。
+此版本完成了 EvoNote 的**后台数据处理核心**。我们构建了一个能够监控文件系统、建立和维护 SQLite 数据库与 Whoosh 全文索引的异步服务。
 
-在经历了V0.3.x系列的多次探索后，我们最终确立了**“信任框架，被动响应”**的核心架构原则。我们彻底放弃了所有手动拦截和处理键盘输入的复杂逻辑，100%回归并利用Qt框架强大的原生文本编辑引擎。
-
-现在的编辑器是一个纯粹的 `QPlainTextEdit` 控件，它提供了“开箱即用”的、无任何“怪异”bug的原生编辑体验。我们的代码只在后台被动监听文本变化（通过`contentsChanged`信号），以实时更新Markdown AST，为未来的功能（如实时预览、语义分析等）奠定了坚实可靠的基础。
-
-您可以参考 [`docs/EvoNote_V1.0_Architecture_Final.md`](docs/EvoNote_V1.0_Architecture_Final.md) 获取关于这次架构决策的完整阐述。
+这个版本是一个“无头(Headless)”的功能版本，**不包含任何新的面向用户的UI功能**，其所有成果都通过后台日志和数据库文件的变化来验证。它为未来的链接补全、反向链接面板和全文搜索等功能奠定了坚实的数据基础。
 
 ## 核心架构
 
 - **微内核架构**: 内核极其轻量，只负责应用生命周期和插件管理。
 - **插件驱动 UI**: 应用的所有 UI 组件都是由插件动态加载的。
-- **响应式编辑器**: 编辑器内核利用Qt的原生编辑引擎，并通过信号槽机制响应式地驱动后台逻辑，确保了编辑体验的绝对稳定。
+- **响应式编辑器**: 编辑器内核利用Qt的原生编辑引擎，并通过信号槽机制响应式地驱动后台逻辑。
+- **异步索引服务**: 一个独立的后台服务，负责监控文件变化，并异步地更新数据库和全文搜索引擎，确保UI的绝对流畅。
 
 ## 技术栈
 
 - **编程语言:** Python 3.10+
 - **UI 框架:** PySide6
 - **Markdown 解析:** `markdown-it-py`
+- **文件监控:** `watchdog`
+- **全文搜索:** `whoosh`
+- **数据库:** `sqlite3`
 
 ## 开始使用
 
@@ -55,38 +52,47 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
     python main.py
     ```
 
-## 项目结构 (V0.3.2)
+## 项目结构 (V0.4.0)
 
 ```
 EvoNote/
+├── .enotes/                # [运行时生成] 存放索引、数据库等缓存文件
 ├── core/                   # 核心微内核代码
 │   ├── __init__.py         # 包初始化文件
-│   ├── api.py              # 为插件提供的公共API上下文 (AppContext)
-│   ├── app.py              # 应用主类(App)和主窗口(MainWindow)的定义与管理
+│   ├── api.py              # 为插件提供的公共API上下文 (未使用)
+│   ├── app.py              # 应用主类(EvoNoteApp)和主窗口(MainWindow)
 │   ├── parsing_service.py  # 提供Markdown到AST的解析功能
 │   ├── plugin_manager.py   # 负责动态发现、加载和管理所有插件
-│   ├── rendering_service.py# 提供AST到QTextDocument的渲染功能 (当前未使用，为未来保留)
-│   └── ui_manager.py       # 管理插件UI与主窗口的交互 (如添加DockWidget)
-│
-├── docs/                   # 项目架构与设计文档
-│   └── EvoNote_V1.0_Architecture_Final.md
+│   ├── rendering_service.py# 提供AST到QTextDocument的渲染功能 (为未来保留)
+│   └── ui_manager.py       # 管理插件UI与主窗口的交互
 │
 ├── plugins/                # 存放所有插件的目录
 │   ├── editable_editor/    # [核心] 响应式编辑器插件
 │   │   └── main.py         #   - 实现ReactiveEditor控件和插件入口
-│   ├── editor_plugin_interface.py # 定义所有编辑器插件必须遵守的接口(ABC)
-│   ├── file_browser_plugin.py     # 提供文件浏览器DockWidget的插件
+│   ├── editor_plugin_interface.py # 定义所有编辑器插件必须遵守的接口
+│   ├── file_browser_plugin.py     # 提供文件浏览器DockWidget的插件 (未使用)
 │   ├── statusbar_test_plugin.py   # 在状态栏显示消息的简单示例插件
 │   ├── _broken_plugin.py   # 用于测试插件加载器容错性的损坏插件示例
 │   └── .gitkeep            # 确保空目录可以被git追踪
 │
-├── tests/                  # 单元测试目录 (当前为空)
+├── services/               # 后台服务目录
+│   ├── __init__.py         # 包初始化文件
+│   └── file_indexer_service.py # 核心文件索引与监控服务
 │
-├── main.py                 # 应用主入口点，负责启动App
+├── tests/                  # 单元测试目录
+│
+├── .gitignore              # Git忽略文件配置
+├── main.py                 # 应用主入口点
+├── README.md               # 项目说明文件
 └── requirements.txt        # 项目的所有Python依赖
 ```
 
 ## 更新日志
+
+### V0.4.0 (2025-10-02) - 索引与链接基础
+- **新功能**: 实现了完整的后台文件监控、数据库和全文索引服务。
+- **架构**: 引入了基于任务队列的异步处理模型，确保UI流畅。
+- **依赖**: 添加了 `watchdog` 和 `whoosh`。
 
 ### V0.3.2 (2025-10-01) - 响应式编辑器内核
 - **架构**: 实施了“信任框架，被动响应”的最终架构，将编辑器内核完全建立在Qt原生引擎之上。
