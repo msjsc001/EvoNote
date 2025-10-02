@@ -1,6 +1,7 @@
 import sys
 import logging
 from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtCore import Qt
 from .plugin_manager import PluginManager
 from .ui_manager import UIManager
 from services.file_indexer_service import FileIndexerService
@@ -50,6 +51,9 @@ class EvoNoteApp:
         FR-3.2: Respond to navigation requests by logging to console.
         """
         print(f"INFO: Navigation to page '{page_title}' requested.")
+        # Normalize to relative path with extension and broadcast active page change
+        page_path = page_title if page_title.lower().endswith('.md') else f"{page_title}.md"
+        GlobalSignalBus.active_page_changed.emit(page_path)
 
     def run(self):
         """
@@ -65,9 +69,17 @@ class EvoNoteApp:
             if hasattr(plugin, 'get_widget'):
                 widget = plugin.get_widget()
                 if widget:
-                    self.ui_manager.add_widget(widget) # Assuming ui_manager has this method
+                    # Support plugin-specified dock area when available
+                    area = getattr(plugin, 'dock_area', None)
+                    if area is None:
+                        self.ui_manager.add_widget(widget)
+                    else:
+                        self.ui_manager.add_dock_widget(widget, area)
         
         self.main_window.show()
+
+        # Broadcast initial active page so panels can request data
+        GlobalSignalBus.active_page_changed.emit('Note A.md')
 
         # Request initial completion list after the UI is fully loaded and shown
         GlobalSignalBus.completion_requested.emit('page_link', '')

@@ -32,6 +32,9 @@ class ReactiveEditor(QPlainTextEdit):
         
         self.setPlainText("# Welcome to EvoNote\n\nStart typing...")
         self.last_completion_prefix = None
+        # Current active file path for this editor instance (relative, with extension)
+        # FR-2: Used to broadcast active page on focus.
+        self.current_file_path = "Note A.md"
 
         # Link rendering state and debounce timer
         self._link_regions = []
@@ -63,6 +66,15 @@ class ReactiveEditor(QPlainTextEdit):
         """Hide completion popup when the editor loses focus."""
         self.completer.popup().hide()
         super().focusOutEvent(event)
+
+    def focusInEvent(self, event):
+        """Broadcast active page when the editor gains focus (FR-2)."""
+        super().focusInEvent(event)
+        try:
+            page_path = getattr(self, "current_file_path", "Note A.md")
+        except Exception:
+            page_path = "Note A.md"
+        GlobalSignalBus.active_page_changed.emit(page_path)
 
     @Slot()
     def _on_contents_changed(self):

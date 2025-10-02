@@ -5,11 +5,14 @@
 
 EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个人知识与自动化工作台。它被设计成通过强大的插件架构实现无限扩展。
 
-## 当前状态 (V0.4.2a - 链接可点击)
+## 当前状态 (V0.4.2b - 反向链接面板)
 
-本版本在 V0.4.1 的 `[[...]]` 链接补全基础上，实现“实时语义渲染 + 悬停手形 + 点击发出导航信号”的完整交互链路，链接在编辑器中以不同颜色和下划线高亮显示。
+本版本在 V0.4.2a 的“链接可点击”基础上，新增异步“反向链接”功能：右侧提供“反向链接”面板，监听当前激活页面，后台线程查询 .enotes/index.db 的 links 表并列出所有指向该页面的来源笔记。点击任一来源项会触发全局导航请求日志。
 
-运行应用后：1) 输入 `[[` 与关键字（如 `[[Note`）体验补全；2) 在文档中输入 `[[Note A]]`、`[[Another Note C]]` 可见渲染；左键点击将于控制台打印导航日志。
+快速体验：
+1) 启动应用后，右侧可见“反向链接”面板；
+2) 焦点进入编辑器或应用启动后默认激活 “Note A.md”，面板将异步展示其反链来源；
+3) 点击列表项（如 “Note B.md”）观察控制台 INFO 日志。
 
 ## 核心架构
 
@@ -52,7 +55,7 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
     python main.py
     ```
 
-## 项目结构 (V0.4.2a)
+## 项目结构 (V0.4.2b)
 
 - [_temp_query.py](_temp_query.py) — 临时查询/调试脚本
 - [_temp_test_completion.py](_temp_test_completion.py) — 后端补全服务验收脚本（无 UI 验证信号链路与检索）
@@ -86,7 +89,7 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
   - [core/parsing_service.py](core/parsing_service.py) — Markdown 解析服务
   - [core/plugin_manager.py](core/plugin_manager.py) — 插件发现、加载与注册
   - [core/rendering_service.py](core/rendering_service.py) — 渲染服务（预留）
-  - [core/signals.py](core/signals.py) — 全局信号总线（UI/服务解耦通信；新增 page_navigation_requested 导航请求信号）
+  - [core/signals.py](core/signals.py) — 全局信号总线（UI/服务解耦通信；包含 page_navigation_requested、active_page_changed、backlink_query_requested、backlink_results_ready）
   - [core/ui_manager.py](core/ui_manager.py) — UI 管理与 Dock 布局
 
 - [plugins/](plugins) — 插件集合
@@ -96,6 +99,8 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
   - [plugins/file_browser_plugin.py](plugins/file_browser_plugin.py) — 文件浏览器 Dock 插件
   - [plugins/statusbar_test_plugin.py](plugins/statusbar_test_plugin.py) — 状态栏演示插件
   - [plugins/completion_service.py](plugins/completion_service.py) — 无 UI 补全服务插件（异步后台线程、信号驱动）
+  - [plugins/backlink_service.py](plugins/backlink_service.py) — 无 UI 反向链接服务插件（QThread/Worker，异步 SQLite 查询）
+  - [plugins/backlink_panel.py](plugins/backlink_panel.py) — 反向链接 Dock 面板插件（监听 active_page_changed/backlink_results_ready，点击触发导航）
   - [plugins/editable_editor/](plugins/editable_editor) — 编辑器插件目录
     - [plugins/editable_editor/main.py](plugins/editable_editor/main.py) — ReactiveEditor：补全弹窗 UI + [[链接]] 实时渲染/悬停/点击发信号
 
@@ -106,6 +111,14 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
 - [tests/](tests) — 测试目录（当前为空，预留单元测试）
 
 ## 更新日志
+
+### V0.4.2b (2025-10-02) - 反向链接面板 (Backlink Panel)
+- 新功能: 右侧“反向链接”面板（QDockWidget + QListWidget），可点击来源项发起全局导航请求。
+- 服务: 新增无 UI 的 Backlink Service 插件，后台线程查询 .enotes/index.db 的 links/files，并通过总线回传结果。
+- 信号: 新增 GlobalSignalBus.active_page_changed、backlink_query_requested、backlink_results_ready；沿用 page_navigation_requested。
+- 性能: 查询在后台线程执行，UI 仅清空/填充列表，切换数千条反链无卡顿（符合 NFR-1）。
+- 解耦: 面板与服务之间仅通过全局信号通信，无直接 import（符合 NFR-2）。
+- 验收: 所有验收项均通过。
 
 ### V0.4.2a (2025-10-02) - 链接可点击 (Clickable Links)
 - 新功能: 编辑器内 `[[页面链接]]` 实时语义渲染（颜色+下划线）、悬停手形、左键点击发出全局导航信号。

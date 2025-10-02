@@ -6,6 +6,8 @@ class _GlobalSignalBus(QObject):
     A singleton-like global signal bus for decoupled communication across the application.
     It allows different components (especially plugins) to communicate without direct dependencies.
     """
+
+    # ---- Completion (existing) ----
     completion_requested = Signal(str, str)
     """
     Emitted when a part of the UI requests a completion.
@@ -25,13 +27,42 @@ class _GlobalSignalBus(QObject):
         results (list): A list of completion suggestions.
     """
 
+    # ---- Navigation (existing) ----
     page_navigation_requested = Signal(str)
     """
     Emitted when the user requests navigation to a page via clicking a [[Page Link]] in the editor.
 
     Args:
-        page_title (str): The target page title to navigate to.
+        page_title (str): The target page title or path to navigate to.
     """
 
+    # ---- Backlink Panel (new for V0.4.2b) ----
+    active_page_changed = Signal(str)
+    """
+    Broadcasts when the currently active page changes.
+
+    Args:
+        page_path (str): The current active page path, relative and including extension
+                         (e.g., 'Note A.md').
+    """
+
+    backlink_query_requested = Signal(str)
+    """
+    Emitted to request backlink data for a given page.
+
+    Args:
+        page_path (str): The target page path, relative and including extension
+                         (e.g., 'Note A.md').
+    """
+
+    backlink_results_ready = Signal(str, list)
+    """
+    Emitted when backlink query results are ready.
+
+    Args:
+        page_path (str): The original requested page path, relative and including extension.
+        results (list): A list of source page paths (relative, including extension)
+                        that link to the target page.
+    """
 # Instantiate the global bus. Import this instance to connect or emit signals.
 GlobalSignalBus = _GlobalSignalBus()
