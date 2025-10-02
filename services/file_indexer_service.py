@@ -26,6 +26,7 @@ class FileIndexerService:
         self.observer = None
         self.worker_thread = None
         self.running = False
+        self.initial_scan_complete = threading.Event()
 
     def start(self):
         """Starts the file indexer service."""
@@ -69,6 +70,14 @@ class FileIndexerService:
         
         logging.info("FileIndexerService stopped.")
 
+    def wait_for_idle(self):
+        """Waits until the initial scan is complete and the task queue is empty."""
+        logging.info("Waiting for initial scan to complete...")
+        self.initial_scan_complete.wait()
+        logging.info("Initial scan task queuing complete. Waiting for queue to be processed...")
+        self.task_queue.join()
+        logging.info("Task queue is empty. Indexer is idle.")
+
     def _init_storage(self):
         """Initializes the database and index directory."""
         logging.info("Initializing storage...")
@@ -102,12 +111,11 @@ class FileIndexerService:
             # --- Initialize Whoosh Index ---
             if not os.path.exists(self.whoosh_path) or not os.listdir(self.whoosh_path):
                 schema = Schema(path=ID(stored=True, unique=True), content=TEXT(stored=True))
-                ix = create_in(self.whoosh_path, schema)
+                self.whoosh_index = create_in(self.whoosh_path, schema)
                 logging.info(f"Whoosh index created in {self.whoosh_path}")
             else:
-                ix = open_dir(self.whoosh_path)
+                self.whoosh_index = open_dir(self.whoosh_path)
                 logging.info(f"Whoosh index opened from {self.whoosh_path}")
-            self.whoosh_index = ix
 
         except Exception as e:
             logging.error(f"Failed to initialize storage: {e}")
@@ -120,6 +128,7 @@ class FileIndexerService:
                 task = {"type": "upsert", "path": str(file_path)}
                 self.task_queue.put(task)
         logging.info("Initial vault scan complete. Tasks are queued for processing.")
+        self.initial_scan_complete.set()
 
     def _process_tasks(self):
         """The main loop for the worker thread."""
@@ -190,10 +199,11 @@ class FileIndexerService:
             writer.commit()
             logging.info(f"Updated Whoosh index for: {file_path_str}")
 
+
         except FileNotFoundError:
             logging.warning(f"File not found during upsert: {file_path_str}. It might have been deleted quickly.")
         except Exception as e:
-            logging.error(f"Failed to handle upsert for {file_path_str}: {e}")
+            logging.exception(f"Failed to handle upsert for {file_path_str}")
 
     def _handle_delete(self, file_path_str: str):
         """Handles file deletion."""
@@ -231,6 +241,7 @@ class FileIndexerService:
             writer.delete_by_term('path', file_path_str)
             writer.commit()
             logging.info(f"Deleted from Whoosh index: {file_path_str}")
+
 
         except Exception as e:
             logging.error(f"Failed to handle delete for {file_path_str}: {e}")

@@ -1,7 +1,7 @@
 # plugins/file_browser_plugin.py
 from PySide6.QtWidgets import QDockWidget, QTreeView
 from PySide6.QtCore import Qt
-from en_core.api import AppContext
+from core.api import AppContext
 
 def register(app_context: AppContext):
     """

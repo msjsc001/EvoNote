@@ -9,9 +9,9 @@ from plugins.editor_plugin_interface import EditorPluginInterface
 class PluginManager:
     def __init__(self, plugin_folder: str = 'plugins'):
         self.plugin_folder = plugin_folder
-        self.loaded_plugins: Dict[str, EditorPluginInterface] = {}
+        self.loaded_plugins: Dict[str, object] = {}
 
-    def discover_and_load_plugins(self):
+    def discover_and_load_plugins(self, app):
         """
         扫描插件目录，并安全地加载所有发现的有效插件。
         """
@@ -19,43 +19,42 @@ class PluginManager:
             print(f"警告：插件目录 '{self.plugin_folder}' 不存在。")
             return
 
-        for plugin_name in os.listdir(self.plugin_folder):
-            if plugin_name.startswith('_'):
+        for item in os.listdir(self.plugin_folder):
+            if item.startswith('_') or item == '.gitkeep':
                 continue
-            plugin_path = os.path.join(self.plugin_folder, plugin_name)
-            # 我们只关心目录形式的插件
-            if os.path.isdir(plugin_path):
-                try:
-                    # 动态构建模块导入路径，例如：plugins.editor_placeholder.main
-                    module_name = f"{self.plugin_folder}.{plugin_name}.main"
-                    plugin_module = importlib.import_module(module_name)
 
-                    # 在模块中查找实现了接口的类
-                    for attribute_name in dir(plugin_module):
-                        attribute = getattr(plugin_module, attribute_name)
-                        if (inspect.isclass(attribute) and
-                                issubclass(attribute, EditorPluginInterface) and
-                                attribute is not EditorPluginInterface):
-                            
-                            # 实例化插件
-                            plugin_instance = attribute()
-                            
-                            # 检查插件名称是否冲突
-                            if plugin_instance.name in self.loaded_plugins:
-                                print(f"错误：插件名称冲突 '{plugin_instance.name}'。跳过加载。")
-                                continue
+            path = os.path.join(self.plugin_folder, item)
+            
+            if os.path.isdir(path):
+                # 目录插件
+                module_name = f"{self.plugin_folder}.{item}.main"
+                self.load_plugin(module_name, app, item)
+            elif item.endswith('.py'):
+                # 文件插件
+                module_name = f"{self.plugin_folder}.{item.replace('.py', '')}"
+                self.load_plugin(module_name, app, item)
 
-                            print(f"成功加载插件：'{plugin_instance.name}'")
-                            self.loaded_plugins[plugin_instance.name] = plugin_instance
-                            break # 每个模块只加载第一个找到的插件类
+    def load_plugin(self, module_name: str, app, plugin_id: str):
+        try:
+            plugin_module = importlib.import_module(module_name)
+            if hasattr(plugin_module, 'create_plugin'):
+                plugin_instance = plugin_module.create_plugin(app)
                 
-                except Exception as e:
-                    print(f"错误：加载插件 '{plugin_name}' 失败。")
-                    print("="*20 + " 错误详情 " + "="*20)
-                    traceback.print_exc()
-                    print("="*52)
-                    # 关键点：捕获异常后继续加载下一个插件
-                    continue
+                # 使用插件ID作为键，确保唯一性
+                if plugin_id in self.loaded_plugins:
+                    print(f"错误：插件ID冲突 '{plugin_id}'。跳过加载。")
+                    return
+                    
+                print(f"成功加载插件：'{plugin_id}'")
+                self.loaded_plugins[plugin_id] = plugin_instance
+            else:
+                print(f"警告：在 '{module_name}' 中未找到 'create_plugin' 函数。")
+
+        except Exception as e:
+            print(f"错误：加载插件 '{module_name}' 失败。")
+            print("="*20 + " 错误详情 " + "="*20)
+            traceback.print_exc()
+            print("="*52)
 
     def get_plugin(self, name: str) -> EditorPluginInterface | None:
         """通过名称获取已加载的插件实例。"""

@@ -5,11 +5,11 @@
 
 EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个人知识与自动化工作台。它被设计成通过强大的插件架构实现无限扩展。
 
-## 当前状态 (V0.4.0.1 - 索引与链接基础)
+## 当前状态 (V0.4.1 - 链接补全 UI)
 
-此版本完成了 EvoNote 的**后台数据处理核心**。我们构建了一个能够监控文件系统、建立和维护 SQLite 数据库与 Whoosh 全文索引的异步服务。
+本版本交付首个面向用户的核心功能：基于 `[[...]]` 的页面链接搜索补全。通过全局信号总线驱动的无头补全服务与编辑器 UI 完全解耦，后台异步检索，前台零卡顿弹出补全列表。
 
-这个版本是一个“无头(Headless)”的功能版本，**不包含任何新的面向用户的UI功能**，其所有成果都通过后台日志和数据库文件的变化来验证。它为未来的链接补全、反向链接面板和全文搜索等功能奠定了坚实的数据基础。
+运行应用后在编辑器中输入 `[[` 与关键字（如 `[[Note`）即可体验实时补全。
 
 ## 核心架构
 
@@ -52,43 +52,66 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
     python main.py
     ```
 
-## 项目结构 (V0.4.0.1)
+## 项目结构 (V0.4.1)
 
-```
-EvoNote/
-├── .enotes/                        # [运行时生成] 存放索引、数据库等缓存文件
-├── core/                           # 核心微内核代码目录
-│   ├── __init__.py                 # Python包初始化文件
-│   ├── api.py                      # 为插件提供的公共API上下文 (当前版本未使用)
-│   ├── app.py                      # 应用主类(EvoNoteApp)和主窗口(MainWindow)定义
-│   ├── parsing_service.py          # 提供Markdown到AST的解析功能
-│   ├── plugin_manager.py           # 负责动态发现、加载和管理所有插件
-│   ├── rendering_service.py        # 提供AST到QTextDocument的渲染功能 (为未来保留)
-│   └── ui_manager.py               # 管理插件UI与主窗口的交互逻辑
-│
-├── plugins/                        # 存放所有插件的目录
-│   ├── editable_editor/            # [核心] 响应式编辑器插件目录
-│   │   └── main.py                 #   - 实现ReactiveEditor控件和插件入口
-│   ├── editor_plugin_interface.py  # 定义所有编辑器插件必须遵守的接口
-│   ├── file_browser_plugin.py      # 提供文件浏览器DockWidget的插件 (当前版本未使用)
-│   ├── statusbar_test_plugin.py    # 在状态栏显示消息的简单示例插件
-│   ├── _broken_plugin.py           # 用于测试插件加载器容错性的损坏插件示例
-│   └── .gitkeep                    # 确保空目录可以被git追踪
-│
-├── services/                       # 后台服务目录
-│   ├── __init__.py                 # Python包初始化文件
-│   └── file_indexer_service.py     # 核心文件索引与监控服务，处理文件事件、数据库和Whoosh索引
-│
-├── tests/                          # 单元测试目录 (当前版本未包含详细测试文件)
-│
-├── .gitignore                      # Git版本控制忽略文件配置
-├── main.py                         # 应用主入口点，启动EvoNote应用
-├── README.md                       # 项目说明文件
-├── requirements.txt                # 项目的所有Python依赖列表
-└── pressure_test.py                # UI响应性压力测试脚本 (验收测试时创建)
-```
+- [_temp_query.py](_temp_query.py) — 临时查询/调试脚本
+- [_temp_test_completion.py](_temp_test_completion.py) — 后端补全服务验收脚本（无 UI 验证信号链路与检索）
+- [.gitignore](.gitignore) — Git 忽略配置
+- [acceptance_plan.md](acceptance_plan.md) — V0.4.1 验收执行计划
+- [Another Note C.md](Another Note C.md) — 测试笔记（用于补全与索引验证）
+- [main.py](main.py) — 应用主入口
+- [Note A.md](Note A.md) — 测试笔记
+- [Note B.md](Note B.md) — 测试笔记
+- [pressure_test.py](pressure_test.py) — UI 响应性压力测试脚本
+- [README.md](README.md) — 项目说明
+- [renamed_target.md](renamed_target.md) — 重命名/链接更新流程测试文件
+- [requirements.txt](requirements.txt) — 依赖清单
+- [source.md](source.md) — 示例/测试源笔记
+- [V0.4.1_Acceptance_Report.md](V0.4.1_Acceptance_Report.md) — 本版本最终验收报告
+
+目录与子项
+- [.enotes/](.enotes) — 运行时生成的数据目录（数据库与全文索引）
+  - [.enotes/index.db](.enotes/index.db) — SQLite 数据库：文件元数据与链接关系
+  - [.enotes/whoosh_index/](.enotes/whoosh_index) — Whoosh 全文索引目录
+    - [.enotes/whoosh_index/_MAIN_223.toc](.enotes/whoosh_index/_MAIN_223.toc) — 当前主段 TOC
+    - [.enotes/whoosh_index/MAIN_5t9n0crqjm363ocf.seg](.enotes/whoosh_index/MAIN_5t9n0crqjm363ocf.seg) — 索引段文件
+    - [.enotes/whoosh_index/MAIN_dwrvkco24nn7mvu9.seg](.enotes/whoosh_index/MAIN_dwrvkco24nn7mvu9.seg) — 索引段文件
+    - [.enotes/whoosh_index/MAIN_sgham1d7jr2cavpo.seg](.enotes/whoosh_index/MAIN_sgham1d7jr2cavpo.seg) — 索引段文件
+    - [.enotes/whoosh_index/MAIN_WRITELOCK](.enotes/whoosh_index/MAIN_WRITELOCK) — 索引写锁
+
+- [core/](core) — 应用微内核
+  - [core/__init__.py](core/__init__.py) — 包初始化
+  - [core/api.py](core/api.py) — 插件公共 API（预留）
+  - [core/app.py](core/app.py) — 应用主类和主窗口（负责启动、服务与插件装配）
+  - [core/parsing_service.py](core/parsing_service.py) — Markdown 解析服务
+  - [core/plugin_manager.py](core/plugin_manager.py) — 插件发现、加载与注册
+  - [core/rendering_service.py](core/rendering_service.py) — 渲染服务（预留）
+  - [core/signals.py](core/signals.py) — 全局信号总线（UI/服务解耦通信）
+  - [core/ui_manager.py](core/ui_manager.py) — UI 管理与 Dock 布局
+
+- [plugins/](plugins) — 插件集合
+  - [plugins/.gitkeep](plugins/.gitkeep) — 空目录占位
+  - [plugins/_broken_plugin.py](plugins/_broken_plugin.py) — 容错测试用损坏插件
+  - [plugins/editor_plugin_interface.py](plugins/editor_plugin_interface.py) — 插件接口定义
+  - [plugins/file_browser_plugin.py](plugins/file_browser_plugin.py) — 文件浏览器 Dock 插件
+  - [plugins/statusbar_test_plugin.py](plugins/statusbar_test_plugin.py) — 状态栏演示插件
+  - [plugins/completion_service.py](plugins/completion_service.py) — 无 UI 补全服务插件（异步后台线程、信号驱动）
+  - [plugins/editable_editor/](plugins/editable_editor) — 编辑器插件目录
+    - [plugins/editable_editor/main.py](plugins/editable_editor/main.py) — ReactiveEditor 与补全弹窗 UI
+
+- [services/](services) — 后台服务
+  - [services/__init__.py](services/__init__.py) — 包初始化
+  - [services/file_indexer_service.py](services/file_indexer_service.py) — 文件监控、数据库与 Whoosh 索引维护
+
+- [tests/](tests) — 测试目录（当前为空，预留单元测试）
 
 ## 更新日志
+
+### V0.4.1 (2025-10-02) - 链接补全 UI
+- 新功能: 页面链接 `[[...]]` 搜索补全，异步弹窗，键盘交互（↑/↓/Enter/Tab/Esc）。
+- 架构: 全局信号总线解耦 UI 与服务；补全服务为无 UI 插件，采用单常驻线程处理查询。
+- 修复: Whoosh 索引初始化赋值、线程竞争与等待时机问题。
+- 验收: 详见 [V0.4.1_Acceptance_Report.md](V0.4.1_Acceptance_Report.md)。
 
 ### V0.4.0.1 (2025-10-02) - 索引与链接基础 (验收完成)
 - **修复**: 解决了文件修改时链接重复索引的 Bug。
