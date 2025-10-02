@@ -5,14 +5,21 @@
 
 EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个人知识与自动化工作台。它被设计成通过强大的插件架构实现无限扩展。
 
-## 当前状态 (V0.4.2b - 反向链接面板)
+## 当前状态 (V0.4.3 - 命令面板)
 
-本版本在 V0.4.2a 的“链接可点击”基础上，新增异步“反向链接”功能：右侧提供“反向链接”面板，监听当前激活页面，后台线程查询 .enotes/index.db 的 links 表并列出所有指向该页面的来源笔记。点击任一来源项会触发全局导航请求日志。
+本版本在 V0.4.2b 的“反向链接面板”之上，引入统一的命令架构与命令面板 UI：
+
+- 全局快捷键：Ctrl+P（Windows/Linux）或 Cmd+P（macOS）打开命令面板（实现见 [core/app.py](core/app.py)）。
+- 工具启动器：底部“工具启动器”Dock 可移动/浮动，右键主窗口空白处可开关各 Dock（实现见 [plugins/tool_launcher.py](plugins/tool_launcher.py)）。
+- 后台命令架构：命令以 [core/command.py](core/command.py) 的 BaseCommand 为契约，通过 [plugins/command_service.py](plugins/command_service.py) 的 CommandRegistry 装饰器注册与查询。
+- 内置命令： [plugins/new_note_command.py](plugins/new_note_command.py)（“文件：新建笔记”）、[plugins/about_command.py](plugins/about_command.py)（“关于：EvoNote”）、[plugins/command_palette_command.py](plugins/command_palette_command.py)（“应用：命令面板”）。
+- 面板分组与过滤：命令按 id 前缀分组（app、file、其他为 misc），输入即实时子串过滤并仅展示匹配组（实现见 [core/command_palette.py](core/command_palette.py)）。
+- 交互：↑/↓ 导航、Enter/双击执行、Esc 关闭。
 
 快速体验：
-1) 启动应用后，右侧可见“反向链接”面板；
-2) 焦点进入编辑器或应用启动后默认激活 “Note A.md”，面板将异步展示其反链来源；
-3) 点击列表项（如 “Note B.md”）观察控制台 INFO 日志。
+1) 按 Ctrl+P 或点击“工具启动器 → 命令面板…”，弹出面板；
+2) 输入“笔记”，仅显示“文件：新建笔记”；
+3) 选中“关于：EvoNote”并回车，终端打印 INFO: Executing command: About EvoNote。
 
 ## 核心架构
 
@@ -55,7 +62,7 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
     python main.py
     ```
 
-## 项目结构 (V0.4.2b)
+## 项目结构 (V0.4.3)
 
 - [_temp_query.py](_temp_query.py) — 临时查询/调试脚本
 - [_temp_test_completion.py](_temp_test_completion.py) — 后端补全服务验收脚本（无 UI 验证信号链路与检索）
@@ -110,7 +117,35 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
 
 - [tests/](tests) — 测试目录（当前为空，预留单元测试）
 
+### 新增文件 (V0.4.3)
+- [core/command.py](core/command.py) — BaseCommand 抽象基类与命令契约
+- [core/command_palette.py](core/command_palette.py) — 命令面板 QDialog（分组/过滤/执行）
+- [plugins/command_service.py](plugins/command_service.py) — 无 UI 命令服务（CommandRegistry 装饰器注册）
+- [plugins/new_note_command.py](plugins/new_note_command.py) — “文件：新建笔记”命令
+- [plugins/about_command.py](plugins/about_command.py) — “关于：EvoNote”命令
+- [plugins/command_palette_command.py](plugins/command_palette_command.py) — “应用：命令面板”命令
+- [plugins/tool_launcher.py](plugins/tool_launcher.py) — 工具启动器 Dock（可移动/右键菜单开关）
+
 ## 更新日志
+
+### V0.4.3 (2025-10-02) - 命令面板 (Command Palette)
+- 新功能:
+  - 命令面板 UI（[core/command_palette.py](core/command_palette.py)）：分组展示（app/file/misc）、实时子串过滤、↑/↓/Enter/双击、Esc 关闭。
+  - 全局快捷键：Ctrl+P / Cmd+P 打开面板（[core/app.py](core/app.py)），含事件过滤兜底，避免快捷键冲突。
+  - 工具启动器 Dock：可移动/可隐藏，右键主窗口空白处可开关各面板（[plugins/tool_launcher.py](plugins/tool_launcher.py)）。
+- 架构:
+  - 引入命令模式：定义 [core/command.py](core/command.py) 的 BaseCommand。
+  - 无 UI 命令服务：提供 CommandRegistry 与装饰器注册（[plugins/command_service.py](plugins/command_service.py)）。
+  - AppContext 暴露 commands；插件通过装饰器即可注册命令（无需改动内核）。
+  - 内置命令：app.command_palette / file.new_note / app.about（见各插件文件）。
+- NFR:
+  - 即时打开与过滤（非阻塞 open()）、架构解耦（服务化、装饰器注册）、可扩展性（第三方插件零内核修改接入）。
+- 验收:
+  1) Ctrl+P/Cmd+P 弹出模态命令面板。
+  2) 初始列表包含“文件：新建笔记”“关于：EvoNote”等已注册命令。
+  3) 输入“笔记”时仅显示“文件：新建笔记”。
+  4) 选中“关于：EvoNote”回车后打印 `INFO: Executing command: About EvoNote` 并关闭面板。
+  5) 新增一个命令插件文件并注册，重启应用后命令自动出现在面板中。
 
 ### V0.4.2b (2025-10-02) - 反向链接面板 (Backlink Panel)
 - 新功能: 右侧“反向链接”面板（QDockWidget + QListWidget），可点击来源项发起全局导航请求。

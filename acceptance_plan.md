@@ -104,3 +104,80 @@
     *   在报告中，针对每一个验收项（FR-1, FR-2, FR-3, NFR-1, NFR-2）及其子项，记录测试结果（通过/失败）。
     *   对发现的任何问题进行描述。
     *   给出最终的验收结论：**通过** 或 **需要修复**。
+## 任务六：V0.4.3 命令面板（Command Palette）验收计划
+
+目标
+- 验证命令架构（装饰器注册、全局可发现、可扩展）与命令面板 UI 的功能与响应性。
+- 验证“工具启动器”Dock 的可移动、可隐藏、右键开关、以及通过命令路径打开命令面板。
+
+范围与实现基线
+- 命令契约与基础类：[core/command.py](core/command.py)
+- 命令注册服务（装饰器）：[plugins/command_service.py](plugins/command_service.py)
+- 命令面板 UI（分组、过滤、执行）：[core/command_palette.py](core/command_palette.py)
+- 全局快捷键与打开逻辑：Ctrl+P/Cmd+P、事件过滤兜底：[core/app.py](core/app.py)
+- 工具启动器 Dock（按钮入口与右键菜单开关）：[plugins/tool_launcher.py](plugins/tool_launcher.py)
+- 内置命令：
+  - 应用：命令面板 [plugins/command_palette_command.py](plugins/command_palette_command.py)
+  - 文件：新建笔记 [plugins/new_note_command.py](plugins/new_note_command.py)
+  - 关于：EvoNote [plugins/about_command.py](plugins/about_command.py)
+
+前置条件
+- 正常安装运行依赖（见 README）。
+- 运行命令：python main.py
+- 如需临时显示顶部“工具”菜单，设置环境变量（默认隐藏）：
+  - Windows CMD: set EVONOTE_TOOLS_MENU=1 &amp;&amp; python main.py
+  - PowerShell: $env:EVONOTE_TOOLS_MENU=1; python main.py
+
+验收步骤与预期
+
+1) 服务与命令注册日志
+- 启动后在终端应看到：
+  - 成功加载插件：'command_service.py'
+  - INFO: Command registered: app.command_palette -&gt; 应用：命令面板
+  - INFO: Command registered: file.new_note -&gt; 文件：新建笔记
+  - INFO: Command registered: app.about -&gt; 关于：EvoNote
+- 若未出现，检查 [plugins/command_service.py](plugins/command_service.py) 与各命令插件的 create_plugin 装饰器注册。
+
+2) 命令面板打开方式
+- 快捷键（推荐）：在主窗口聚焦时按 Ctrl+P（或 Cmd+P、Ctrl+Shift+P）；终端出现：
+  - INFO: Shortcut triggered: Command Palette
+  - INFO: Opening Command Palette...
+- Dock 按钮：点击“工具启动器”中的“命令面板…”，终端出现其路径日志：
+  - INFO: ToolLauncher: executing command 'app.command_palette'
+  - INFO: Opening Command Palette...
+- 打开逻辑基线：[core/app.py](core/app.py) 与 [plugins/tool_launcher.py](plugins/tool_launcher.py)
+
+3) 列表分组与实时过滤
+- 面板初始应显示分组标题（粗体且不可选）：[app]、[file]（可能还有 [misc]）。
+- 在搜索框输入“笔记”，仅剩 [file] 组，且只包含“文件：新建笔记”。
+- 组头为非可选项，↑/↓ 导航会自动跳过组头并选中真实命令。
+- 实现基线：[core/command_palette.py](core/command_palette.py)
+
+4) 命令执行与关闭
+- 选择“关于：EvoNote”并回车或双击：
+  - 面板关闭
+  - 终端打印：INFO: Executing command: About EvoNote
+- 基线实现：[plugins/about_command.py](plugins/about_command.py)
+
+5) 工具启动器 Dock 行为
+- 默认位于底部，可拖动到任意边或浮动，可关闭/隐藏。
+- 在主窗口空白处右键，弹出面板名单菜单（包含“工具启动器”“Reactive Editor”“反向链接”等），可勾选显示/隐藏。
+- 基线实现：[plugins/tool_launcher.py](plugins/tool_launcher.py)
+
+6) 第三方扩展性（装饰器注册）
+- 在 plugins 目录新增一个命令插件文件（例如 plugins/hello_command.py），在 create_plugin(app) 内部通过 app.app_context.commands.register 装饰器注册 BaseCommand 子类（无须改内核）。
+- 重启应用后，命令自动出现在命令面板（分组依据 id 前缀）。
+- 关键约束：
+  - BaseCommand.id/ BaseCommand.title 必须为非空字符串
+  - 命令 id 全局唯一，否则注册会抛出错误（去重保护在 [plugins/command_service.py](plugins/command_service.py)）
+
+通过标准（全部满足为通过）
+- Ctrl+P / Cmd+P 可打开命令面板，或通过“工具启动器→命令面板…”打开，终端日志与 UI 行为一致。
+- 初始列表包含“文件：新建笔记”“关于：EvoNote”等注册命令，且按分组显示。
+- 输入“笔记”，列表仅剩“文件：新建笔记”。
+- 选中“关于：EvoNote”并回车，打印 INFO: Executing command: About EvoNote，且面板关闭。
+- 新增任意命令插件文件并注册后，重启应用即可在命令面板看到该命令。
+
+备注
+- 若发现快捷键与某些输入法/系统存在冲突，已在 [core/app.py](core/app.py) 实施全局事件过滤兜底（QEvent.ShortcutOverride/KeyPress），并保留 Ctrl+Shift+P 作为回退组合键。
+- 顶部“工具”菜单默认隐藏，仅在 EVONOTE_TOOLS_MENU=1 时启用；不影响 Dock 自由布局与右键开关体验。

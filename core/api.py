@@ -15,12 +15,19 @@ class AppContext:
     
     Attributes:
         ui: The UI manager for adding components like dock widgets.
+        file_indexer_service: Optional service providing file indexing/search capabilities.
+        commands: The CommandRegistry instance used to register/query commands.
     """
-    def __init__(self, ui_manager: UIManager):
+    def __init__(self, ui_manager: 'UIManager', file_indexer_service=None, commands=None):
+        # Core UI access
         self.ui = ui_manager
+        # Service references exposed for plugins (set by the host app during startup)
+        self.file_indexer_service = file_indexer_service
+        # Command registry (populated by command_service plugin)
+        self.commands = commands
 
     @property
-    def main_window(self) -> QMainWindow:
+    def main_window(self) -> 'QMainWindow':
         """
         Provides direct access to the main window.
         Note: For adding UI elements like docks, prefer using the `ui` manager.
