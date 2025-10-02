@@ -1,4 +1,5 @@
 import sys
+import logging
 from PySide6.QtWidgets import QApplication, QMainWindow
 from .plugin_manager import PluginManager
 from .ui_manager import UIManager
@@ -40,6 +41,15 @@ class EvoNoteApp:
         self.ui_manager = UIManager(self.main_window)
         self.plugin_manager = PluginManager()
         self.file_indexer_service = FileIndexerService(vault_path=".")
+
+        # Connect global navigation signal (FR-3.1)
+        GlobalSignalBus.page_navigation_requested.connect(self.on_page_navigation_requested)
+        
+    def on_page_navigation_requested(self, page_title: str):
+        """
+        FR-3.2: Respond to navigation requests by logging to console.
+        """
+        print(f"INFO: Navigation to page '{page_title}' requested.")
 
     def run(self):
         """

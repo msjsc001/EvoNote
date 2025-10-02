@@ -1,9 +1,9 @@
 # plugins/editable_editor/main.py
 import re
 import logging
-from PySide6.QtWidgets import QPlainTextEdit, QWidget, QDockWidget, QCompleter
-from PySide6.QtCore import Slot, Qt, QStringListModel
-from PySide6.QtGui import QKeyEvent, QTextCursor
+from PySide6.QtWidgets import QPlainTextEdit, QWidget, QDockWidget, QCompleter, QTextEdit
+from PySide6.QtCore import Slot, Qt, QStringListModel, QTimer
+from PySide6.QtGui import QKeyEvent, QTextCursor, QTextCharFormat, QColor
 from plugins.editor_plugin_interface import EditorPluginInterface
 from core.parsing_service import parse_markdown
 from core.signals import GlobalSignalBus
@@ -33,6 +33,22 @@ class ReactiveEditor(QPlainTextEdit):
         self.setPlainText("# Welcome to EvoNote\n\nStart typing...")
         self.last_completion_prefix = None
 
+        # Link rendering state and debounce timer
+        self._link_regions = []
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._recompute_and_apply_link_selections)
+
+        # Enable hover tracking for interactive links
+        self.setMouseTracking(True)
+        try:
+            self.viewport().setMouseTracking(True)
+        except Exception:
+            pass
+
+        # Initial render for any pre-filled [[links]]
+        self._schedule_render_update()
+
     def keyPressEvent(self, event: QKeyEvent):
         if self.completer.popup().isVisible():
             if event.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Tab, Qt.Key_Backtab):
@@ -59,6 +75,9 @@ class ReactiveEditor(QPlainTextEdit):
             ast = parse_markdown(full_text)
         except Exception as e:
             pass
+
+        # Debounced semantic rendering update for [[links]]
+        self._schedule_render_update()
 
         # Log current token context for diagnostics
         cursor = self.textCursor()
@@ -142,6 +161,83 @@ class ReactiveEditor(QPlainTextEdit):
             
             cursor.insertText(f"[[{completion_text}]]")
             self.completer.popup().hide()
+
+    # --- Live Semantic Rendering for [[Page Links]] ---
+    def _schedule_render_update(self):
+        """Debounced schedule to recompute and apply link selections."""
+        try:
+            # 80ms debounce to ensure no typing lag (NFR-1)
+            self._render_timer.start(80)
+        except Exception:
+            # timer might not be ready during early construction
+            pass
+
+    def _recompute_and_apply_link_selections(self):
+        """Scan document for [[links]] and apply ExtraSelections with distinct style."""
+        full_text = self.toPlainText()
+
+        # Extract link spans across entire document using a lightweight regex
+        # Pattern: [[...]] without nested brackets and across a single line
+        self._link_regions = []
+        selections = []
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(30, 136, 229))  # Distinct blue
+        fmt.setFontUnderline(True)               # Underline to imply interactivity
+
+        for m in re.finditer(r'\[\[([^\[\]\n]+?)\]\]', full_text):
+            start = m.start()
+            end = m.end()
+            title = m.group(1).strip()
+            self._link_regions.append({"start": start, "end": end, "title": title})
+
+            sel = QTextEdit.ExtraSelection()
+            c = QTextCursor(self.document())
+            c.setPosition(start)
+            c.setPosition(end, QTextCursor.KeepAnchor)
+            sel.cursor = c
+            sel.format = fmt
+            selections.append(sel)
+
+        # Apply all link selections at once
+        self.setExtraSelections(selections)
+
+    def _hit_test_link(self, doc_pos: int):
+        """Return link span dict if document position hits a link, else None."""
+        for span in self._link_regions:
+            if span["start"] <= doc_pos < span["end"]:
+                return span
+        return None
+
+    def mouseMoveEvent(self, event):
+        """Hover effect: switch cursor to pointing hand when over a link."""
+        try:
+            pt = event.position().toPoint()
+        except AttributeError:
+            pt = event.pos()
+        cur = self.cursorForPosition(pt)
+        hit = self._hit_test_link(cur.position())
+        if hit:
+            self.viewport().setCursor(Qt.PointingHandCursor)
+        else:
+            self.viewport().setCursor(Qt.IBeamCursor)
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        """Click handling: emit global navigation signal when a link is clicked."""
+        if event.button() == Qt.LeftButton:
+            try:
+                pt = event.position().toPoint()
+            except AttributeError:
+                pt = event.pos()
+            doc_pos = self.cursorForPosition(pt).position()
+            hit = self._hit_test_link(doc_pos)
+            if hit:
+                # Do not move caret; just emit navigation request and consume the event
+                GlobalSignalBus.page_navigation_requested.emit(hit["title"])
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
 class EditableEditorPlugin(EditorPluginInterface):
     def __init__(self, app):

@@ -25,5 +25,13 @@ class _GlobalSignalBus(QObject):
         results (list): A list of completion suggestions.
     """
 
+    page_navigation_requested = Signal(str)
+    """
+    Emitted when the user requests navigation to a page via clicking a [[Page Link]] in the editor.
+
+    Args:
+        page_title (str): The target page title to navigate to.
+    """
+
 # Instantiate the global bus. Import this instance to connect or emit signals.
 GlobalSignalBus = _GlobalSignalBus()

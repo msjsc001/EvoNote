@@ -5,11 +5,11 @@
 
 EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个人知识与自动化工作台。它被设计成通过强大的插件架构实现无限扩展。
 
-## 当前状态 (V0.4.1 - 链接补全 UI)
+## 当前状态 (V0.4.2a - 链接可点击)
 
-本版本交付首个面向用户的核心功能：基于 `[[...]]` 的页面链接搜索补全。通过全局信号总线驱动的无头补全服务与编辑器 UI 完全解耦，后台异步检索，前台零卡顿弹出补全列表。
+本版本在 V0.4.1 的 `[[...]]` 链接补全基础上，实现“实时语义渲染 + 悬停手形 + 点击发出导航信号”的完整交互链路，链接在编辑器中以不同颜色和下划线高亮显示。
 
-运行应用后在编辑器中输入 `[[` 与关键字（如 `[[Note`）即可体验实时补全。
+运行应用后：1) 输入 `[[` 与关键字（如 `[[Note`）体验补全；2) 在文档中输入 `[[Note A]]`、`[[Another Note C]]` 可见渲染；左键点击将于控制台打印导航日志。
 
 ## 核心架构
 
@@ -52,7 +52,7 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
     python main.py
     ```
 
-## 项目结构 (V0.4.1)
+## 项目结构 (V0.4.2a)
 
 - [_temp_query.py](_temp_query.py) — 临时查询/调试脚本
 - [_temp_test_completion.py](_temp_test_completion.py) — 后端补全服务验收脚本（无 UI 验证信号链路与检索）
@@ -86,7 +86,7 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
   - [core/parsing_service.py](core/parsing_service.py) — Markdown 解析服务
   - [core/plugin_manager.py](core/plugin_manager.py) — 插件发现、加载与注册
   - [core/rendering_service.py](core/rendering_service.py) — 渲染服务（预留）
-  - [core/signals.py](core/signals.py) — 全局信号总线（UI/服务解耦通信）
+  - [core/signals.py](core/signals.py) — 全局信号总线（UI/服务解耦通信；新增 page_navigation_requested 导航请求信号）
   - [core/ui_manager.py](core/ui_manager.py) — UI 管理与 Dock 布局
 
 - [plugins/](plugins) — 插件集合
@@ -97,7 +97,7 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
   - [plugins/statusbar_test_plugin.py](plugins/statusbar_test_plugin.py) — 状态栏演示插件
   - [plugins/completion_service.py](plugins/completion_service.py) — 无 UI 补全服务插件（异步后台线程、信号驱动）
   - [plugins/editable_editor/](plugins/editable_editor) — 编辑器插件目录
-    - [plugins/editable_editor/main.py](plugins/editable_editor/main.py) — ReactiveEditor 与补全弹窗 UI
+    - [plugins/editable_editor/main.py](plugins/editable_editor/main.py) — ReactiveEditor：补全弹窗 UI + [[链接]] 实时渲染/悬停/点击发信号
 
 - [services/](services) — 后台服务
   - [services/__init__.py](services/__init__.py) — 包初始化
@@ -106,6 +106,13 @@ EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个
 - [tests/](tests) — 测试目录（当前为空，预留单元测试）
 
 ## 更新日志
+
+### V0.4.2a (2025-10-02) - 链接可点击 (Clickable Links)
+- 新功能: 编辑器内 `[[页面链接]]` 实时语义渲染（颜色+下划线）、悬停手形、左键点击发出全局导航信号。
+- 架构: 严格遵循信号驱动导航，编辑器仅发射 GlobalSignalBus.page_navigation_requested，不承担打开页面等应用逻辑；应用核心记录 INFO 日志验证链路。
+- 性能: 为 setExtraSelections 渲染更新引入 80ms 防抖，确保快速输入零卡顿。
+- 兼容: 与 V0.4.1 的补全 UI 完全兼容，可并行工作。
+- 验收: 4 项标准全部通过。
 
 ### V0.4.1 (2025-10-02) - 链接补全 UI
 - 新功能: 页面链接 `[[...]]` 搜索补全，异步弹窗，键盘交互（↑/↓/Enter/Tab/Esc）。
