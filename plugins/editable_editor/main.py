@@ -103,26 +103,37 @@ class ReactiveEditor(QPlainTextEdit):
         cursor = self.textCursor()
         current_line_text = cursor.block().text()[:cursor.positionInBlock()]
         
-        match = re.search(r'\[\[([^\]\[]*)$', current_line_text)
+        # FR-4.1: Detect page links `[[...` and content blocks `{{...`
+        page_link_match = re.search(r'\[\[([^\]\[]*)$', current_line_text)
+        content_block_match = re.search(r'\{\{([^\{\}]*)$', current_line_text)
 
-        if match:
-            prefix = match.group(1)
-            logging.info(f"trigger: prefix='{prefix}'")
-            # Emit search request whenever prefix changes and is non-empty
-            if prefix != (self.last_completion_prefix or ""):
+        # Determine which trigger is active, if any
+        active_match = None
+        completion_type = None
+        if page_link_match:
+            active_match = page_link_match
+            completion_type = 'page_link'
+        elif content_block_match:
+            active_match = content_block_match
+            completion_type = 'content_block'
+
+        if active_match and completion_type:
+            prefix = active_match.group(1)
+            logging.info(f"Completion trigger activated: type='{completion_type}', prefix='{prefix}'")
+
+            # Emit search request if the prefix has changed
+            if prefix != self.last_completion_prefix:
                 if prefix.strip():
-                    logging.info(f"emit completion_requested for prefix='{prefix}'")
-                    GlobalSignalBus.completion_requested.emit('page_link', prefix)
+                    GlobalSignalBus.completion_requested.emit(completion_type, prefix)
                 self.last_completion_prefix = prefix
 
             self.completer.setCompletionPrefix(prefix)
-            # Adjust popup size and show near the cursor
             self._update_popup_size()
             self.completer.complete(self.cursorRect(cursor))
         else:
-            # Hide popup and reset prefix tracking when pattern no longer matches
+            # If no pattern matches, hide the popup
             if self.completer.popup().isVisible():
-                 self.completer.popup().hide()
+                self.completer.popup().hide()
             self.last_completion_prefix = None
 
     def _update_popup_size(self, strings=None):
@@ -145,14 +156,15 @@ class ReactiveEditor(QPlainTextEdit):
     @Slot(str, str, list)
     def _on_completion_results_ready(self, completion_type, query_text, results):
         logging.info(f"Received completion results: type={completion_type}, count={len(results)}")
-        if completion_type == 'page_link':
+        # FR-4.2: Reuse completion UI for both page links and content blocks
+        if completion_type == 'page_link' or completion_type == 'content_block':
             self.completion_model.setStringList(results)
-            logging.info(f"Completion model updated with {self.completion_model.rowCount()} items.")
+            logging.info(f"Completion model for '{completion_type}' updated with {self.completion_model.rowCount()} items.")
             self._update_popup_size(results)
-            # Force popup refresh with fresh data at current caret
-            self.completer.complete(self.cursorRect(self.textCursor()))
-            # Also re-check trigger to keep state in sync
-            self._check_for_completion_trigger()
+            # Re-trigger the completer to ensure it shows with the new data
+            if self.last_completion_prefix is not None:
+                 self.completer.complete(self.cursorRect(self.textCursor()))
+            self._check_for_completion_trigger() # Keep state in sync
     
     @Slot(str)
     def insert_completion(self, completion_text):
@@ -160,18 +172,32 @@ class ReactiveEditor(QPlainTextEdit):
         cursor = self.textCursor()
         
         text_before_cursor = cursor.block().text()[:cursor.positionInBlock()]
-        match = re.search(r'\[\[([^\]\[]*)$', text_before_cursor)
+        # Check for both page link and content block patterns
+        page_link_match = re.search(r'\[\[([^\]\[]*)$', text_before_cursor)
+        content_block_match = re.search(r'\{\{([^\{\}]*)$', text_before_cursor)
 
+        match = page_link_match or content_block_match
+        
         if match:
-            start_pos_in_block = match.start(0)
-            
+            start_pos = match.start(0)
+            # Determine the correct wrapper based on which pattern matched
+            if page_link_match:
+                left, right = "[[", "]]"
+            else:
+                left, right = "{{", "}}"
+
+            # Select the text from the trigger start to the cursor
             cursor.movePosition(QTextCursor.StartOfBlock)
-            cursor.movePosition(QTextCursor.Right, n=start_pos_in_block)
+            cursor.movePosition(QTextCursor.Right, n=start_pos)
+            cursor.movePosition(
+                QTextCursor.Right,
+                QTextCursor.KeepAnchor,
+                len(text_before_cursor) - start_pos
+            )
             
-            length_to_select = len(text_before_cursor) - start_pos_in_block
-            cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, length_to_select)
-            
-            cursor.insertText(f"[[{completion_text}]]")
+            # Insert the completed text with the correct wrapper
+            cursor.insertText(f"{left}{completion_text}{right}")
+            self.setTextCursor(cursor)
             self.completer.popup().hide()
 
     # --- Live Semantic Rendering for [[Page Links]] ---

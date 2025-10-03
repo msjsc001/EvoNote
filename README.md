@@ -1,197 +1,135 @@
 # EvoNote - 可进化的笔记与自动化平台
 
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个人知识与自动化工作台。它被设计成通过强大的插件架构实现无限扩展。
+EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个人知识与自动化工作台。通过微内核 + 插件架构，持续演进能力强。
 
-## 当前状态 (V0.4.3 - 命令面板)
+## 当前状态 (V0.4.4 - 内容块引擎·基础)
 
-本版本在 V0.4.2b 的“反向链接面板”之上，引入统一的命令架构与命令面板 UI：
+本版本在 V0.4.3“命令面板”基础上，新增“内容块引擎（基础）”能力，围绕 `{{内容块}}` 实现了完整后台链路：
+- 内容即地址：任何 `{{...}}` 被视为内容块，其身份由内容字符串的 SHA-256 哈希标识（严格不做 strip）。
+- 后台索引：在文件变更时自动识别并写入 SQLite 的 `blocks` 表，并建立 FTS5 搜索索引。
+  - 表创建与初始化见 [FileIndexerService._init_storage()](services/file_indexer_service.py:82)
+  - 内容块提取、哈希与入库见 [FileIndexerService._index_content_blocks()](services/file_indexer_service.py:352)
+- 补全服务：新增 `completion_type='content_block'`，基于 `blocks_fts` 实时前缀搜索；若 FTS5 不可用则回退 `LIKE`。
+  - 类型分流见 [CompletionWorker.search()](plugins/completion_service.py:30)
+- 编辑器交互：在输入 `{{` 后复用已有补全 UI 弹出候选，选中后插入 `{{候选内容}}`。
+  - 触发逻辑见 [ReactiveEditor._check_for_completion_trigger()](plugins/editable_editor/main.py:101)
+  - 结果填充见 [ReactiveEditor._on_completion_results_ready()](plugins/editable_editor/main.py:145)
+  - 插入逻辑见 [ReactiveEditor.insert_completion()](plugins/editable_editor/main.py:157)
 
-- 全局快捷键：Ctrl+P（Windows/Linux）或 Cmd+P（macOS）打开命令面板（实现见 [core/app.py](core/app.py)）。
-- 工具启动器：底部“工具启动器”Dock 可移动/浮动，右键主窗口空白处可开关各 Dock（实现见 [plugins/tool_launcher.py](plugins/tool_launcher.py)）。
-- 后台命令架构：命令以 [core/command.py](core/command.py) 的 BaseCommand 为契约，通过 [plugins/command_service.py](plugins/command_service.py) 的 CommandRegistry 装饰器注册与查询。
-- 内置命令： [plugins/new_note_command.py](plugins/new_note_command.py)（“文件：新建笔记”）、[plugins/about_command.py](plugins/about_command.py)（“关于：EvoNote”）、[plugins/command_palette_command.py](plugins/command_palette_command.py)（“应用：命令面板”）。
-- 面板分组与过滤：命令按 id 前缀分组（app、file、其他为 misc），输入即实时子串过滤并仅展示匹配组（实现见 [core/command_palette.py](core/command_palette.py)）。
-- 交互：↑/↓ 导航、Enter/双击执行、Esc 关闭。
+V0.4.4 明确不包含“同步修改”等高级能力，后续版本实现。
 
-快速体验：
-1) 按 Ctrl+P 或点击“工具启动器 → 命令面板…”，弹出面板；
-2) 输入“笔记”，仅显示“文件：新建笔记”；
-3) 选中“关于：EvoNote”并回车，终端打印 INFO: Executing command: About EvoNote。
+## 快速开始
 
-## 核心架构
+1) 安装依赖
+```bash
+pip install -r requirements.txt
+```
 
-- **微内核架构**: 内核极其轻量，只负责应用生命周期和插件管理。
-- **插件驱动 UI**: 应用的所有 UI 组件都是由插件动态加载的。
-- **响应式编辑器**: 编辑器内核利用Qt的原生编辑引擎，并通过信号槽机制响应式地驱动后台逻辑。
-- **异步索引服务**: 一个独立的后台服务，负责监控文件变化，并异步地更新数据库和全文搜索引擎，确保UI的绝对流畅。
+2) 运行应用
+```bash
+python main.py
+```
 
-## 技术栈
+3) 体验要点
+- 在编辑器任一笔记中输入：`{{Hello World}}`，稍候后台会将该内容哈希写入数据库。
+- 在新笔记中输入：`{{He`，应弹出补全列表，包含“Hello World”；选择后会插入 `{{Hello World}}`。
+- 再将其改成 `{{Hello EvoNote}}`，数据库将新增一条新内容块记录，旧记录仍在。
 
-- **编程语言:** Python 3.10+
-- **UI 框架:** PySide6
-- **Markdown 解析:** `markdown-it-py`
-- **文件监控:** `watchdog`
-- **全文搜索:** `whoosh`
-- **数据库:** `sqlite3`
+提示：首次运行会在仓库根创建运行时目录 `.enotes/`（包含 `index.db` 与 Whoosh 索引）。该目录属于运行产物，默认不应提交到版本库。
 
-## 开始使用
+## 架构概览
 
-### 环境要求
+- 微内核
+  - 应用入口与主窗口： [EvoNoteApp.run()](core/app.py:185)
+  - 插件系统： [PluginManager](core/plugin_manager.py)
+  - UI 容器： [UIManager](core/ui_manager.py)
+  - 全局总线： [GlobalSignalBus](core/signals.py)
 
-- Python 3.10 或更高版本
-- `pip` 包管理器
+- 后台服务
+  - 文件与索引服务： [FileIndexerService](services/file_indexer_service.py)
+    - 数据库表：`files`, `links`, 新增 `blocks`；FTS5 虚表：`blocks_fts`
+    - Whoosh 全文索引用于页面/路径搜索（与内容块索引互不干扰）
 
-### 安装与运行
+- 插件
+  - 编辑器（可编辑 + 补全 UI）： [ReactiveEditor](plugins/editable_editor/main.py)
+  - 补全服务（无 UI）： [CompletionServicePlugin](plugins/completion_service.py)
 
-1.  **克隆仓库:**
-    ```bash
-    git clone https://github.com/msjsc001/EvoNote.git
-    cd EvoNote
-    ```
+## 功能要点 (V0.4.4)
 
-2.  **安装依赖:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+- 内容即地址（Content-Addressable）
+  - 对 `{{...}}` 的纯文本内容计算 `hashlib.sha256(content).hexdigest()`，作为唯一身份 ID。
+- 去重入库
+  - 使用 `INSERT OR IGNORE` 保证相同内容仅有一条 `blocks` 记录。
+- 实时补全
+  - `completion_type='content_block'` 触发后，优先查询 `blocks_fts`，否则回退 `LIKE` 前缀。
+- UI 解耦
+  - UI 通过总线发射与接收补全请求/结果：详见 [CompletionWorker.search()](plugins/completion_service.py:30)、[ReactiveEditor._on_completion_results_ready()](plugins/editable_editor/main.py:145)
 
-3.  **运行应用:**
-    ```bash
-    python main.py
-    ```
+## 版本升级小抄 (从 V0.4.3 升级到 V0.4.4)
 
-## 项目结构 (V0.4.3)
+无需手动迁移。首次启动会自动：
+- 确保 `.enotes/` 与子目录存在
+- 自动在 `index.db` 中创建/迁移 `blocks` 与 `blocks_fts`（若 FTS5 不可用会继续正常运行，改为 LIKE 查询）
 
-- [_temp_query.py](_temp_query.py) — 临时查询/调试脚本
-- [_temp_test_completion.py](_temp_test_completion.py) — 后端补全服务验收脚本（无 UI 验证信号链路与检索）
-- [.gitignore](.gitignore) — Git 忽略配置
-- [acceptance_plan.md](acceptance_plan.md) — V0.4.1 验收执行计划
-- [Another Note C.md](Another Note C.md) — 测试笔记（用于补全与索引验证）
-- [main.py](main.py) — 应用主入口
-- [Note A.md](Note A.md) — 测试笔记
-- [Note B.md](Note B.md) — 测试笔记
-- [pressure_test.py](pressure_test.py) — UI 响应性压力测试脚本
-- [README.md](README.md) — 项目说明
-- [renamed_target.md](renamed_target.md) — 重命名/链接更新流程测试文件
-- [requirements.txt](requirements.txt) — 依赖清单
-- [source.md](source.md) — 示例/测试源笔记
-- [V0.4.1_Acceptance_Report.md](V0.4.1_Acceptance_Report.md) — 本版本最终验收报告
+## 验收摘要 (SRS V0.4.4 第7节)
 
-目录与子项
-- [.enotes/](.enotes) — 运行时生成的数据目录（数据库与全文索引）
-  - [.enotes/index.db](.enotes/index.db) — SQLite 数据库：文件元数据与链接关系
-  - [.enotes/whoosh_index/](.enotes/whoosh_index) — Whoosh 全文索引目录
-    - [.enotes/whoosh_index/_MAIN_223.toc](.enotes/whoosh_index/_MAIN_223.toc) — 当前主段 TOC
-    - [.enotes/whoosh_index/MAIN_5t9n0crqjm363ocf.seg](.enotes/whoosh_index/MAIN_5t9n0crqjm363ocf.seg) — 索引段文件
-    - [.enotes/whoosh_index/MAIN_dwrvkco24nn7mvu9.seg](.enotes/whoosh_index/MAIN_dwrvkco24nn7mvu9.seg) — 索引段文件
-    - [.enotes/whoosh_index/MAIN_sgham1d7jr2cavpo.seg](.enotes/whoosh_index/MAIN_sgham1d7jr2cavpo.seg) — 索引段文件
-    - [.enotes/whoosh_index/MAIN_WRITELOCK](.enotes/whoosh_index/MAIN_WRITELOCK) — 索引写锁
+以下五条标准均已通过，详见报告：
+- 在笔记中输入 `{{Hello World}}`，`blocks` 表新增以其哈希为键的记录。
+- 在另一笔记重复 `{{Hello World}}`，记录数不增加（去重生效）。
+- 输入 `{{He` 出现补全，其中包含“Hello World”。
+- 选择补全项后插入 `{{Hello World}}`。
+- 修改为 `{{Hello EvoNote}}` 后，数据库新增新块记录，旧记录保留。
 
-- [core/](core) — 应用微内核
-  - [core/__init__.py](core/__init__.py) — 包初始化
-  - [core/api.py](core/api.py) — 插件公共 API（预留）
-  - [core/app.py](core/app.py) — 应用主类和主窗口（负责启动、服务与插件装配）
-  - [core/parsing_service.py](core/parsing_service.py) — Markdown 解析服务
-  - [core/plugin_manager.py](core/plugin_manager.py) — 插件发现、加载与注册
-  - [core/rendering_service.py](core/rendering_service.py) — 渲染服务（预留）
-  - [core/signals.py](core/signals.py) — 全局信号总线（UI/服务解耦通信；包含 page_navigation_requested、active_page_changed、backlink_query_requested、backlink_results_ready）
-  - [core/ui_manager.py](core/ui_manager.py) — UI 管理与 Dock 布局
+报告文档： [acceptance_report_v0.4.4.md](acceptance_report_v0.4.4.md)
 
-- [plugins/](plugins) — 插件集合
-  - [plugins/.gitkeep](plugins/.gitkeep) — 空目录占位
-  - [plugins/_broken_plugin.py](plugins/_broken_plugin.py) — 容错测试用损坏插件
-  - [plugins/editor_plugin_interface.py](plugins/editor_plugin_interface.py) — 插件接口定义
-  - [plugins/file_browser_plugin.py](plugins/file_browser_plugin.py) — 文件浏览器 Dock 插件
-  - [plugins/statusbar_test_plugin.py](plugins/statusbar_test_plugin.py) — 状态栏演示插件
-  - [plugins/completion_service.py](plugins/completion_service.py) — 无 UI 补全服务插件（异步后台线程、信号驱动）
-  - [plugins/backlink_service.py](plugins/backlink_service.py) — 无 UI 反向链接服务插件（QThread/Worker，异步 SQLite 查询）
-  - [plugins/backlink_panel.py](plugins/backlink_panel.py) — 反向链接 Dock 面板插件（监听 active_page_changed/backlink_results_ready，点击触发导航）
-  - [plugins/editable_editor/](plugins/editable_editor) — 编辑器插件目录
-    - [plugins/editable_editor/main.py](plugins/editable_editor/main.py) — ReactiveEditor：补全弹窗 UI + [[链接]] 实时渲染/悬停/点击发信号
+## 项目结构（简要）
 
-- [services/](services) — 后台服务
-  - [services/__init__.py](services/__init__.py) — 包初始化
-  - [services/file_indexer_service.py](services/file_indexer_service.py) — 文件监控、数据库与 Whoosh 索引维护
+- 核心与服务
+  - [core/](core)
+  - [services/file_indexer_service.py](services/file_indexer_service.py)
+- 插件
+  - [plugins/editable_editor/](plugins/editable_editor)
+  - [plugins/completion_service.py](plugins/completion_service.py)
+- 运行时（不提交）
+  - [.enotes/](.enotes) 运行时数据库与索引（已列入 .gitignore）
 
-- [tests/](tests) — 测试目录（当前为空，预留单元测试）
+仓库保留了少量示例/测试笔记（如 `Note A.md`、`Note B.md`）以便快速体验；它们不影响程序功能，可按需删除或替换为你的笔记。
 
-### 新增文件 (V0.4.3)
-- [core/command.py](core/command.py) — BaseCommand 抽象基类与命令契约
-- [core/command_palette.py](core/command_palette.py) — 命令面板 QDialog（分组/过滤/执行）
-- [plugins/command_service.py](plugins/command_service.py) — 无 UI 命令服务（CommandRegistry 装饰器注册）
-- [plugins/new_note_command.py](plugins/new_note_command.py) — “文件：新建笔记”命令
-- [plugins/about_command.py](plugins/about_command.py) — “关于：EvoNote”命令
-- [plugins/command_palette_command.py](plugins/command_palette_command.py) — “应用：命令面板”命令
-- [plugins/tool_launcher.py](plugins/tool_launcher.py) — 工具启动器 Dock（可移动/右键菜单开关）
+## 故障排查
+
+- 没有看到补全
+  - 确认已输入 `{{` 且有前缀（如 `{{He`）
+  - 查看启动日志，若见 “Falling back to LIKE…” 也属正常（FTS5 不可用时的回退）
+- 数据未入库
+  - 等待 1~2 秒后台索引；或查看控制台是否有异常堆栈
+- Windows 中文输入法导致快捷键冲突
+  - 已通过全局事件过滤兜底逻辑降低冲突概率，详见 [EvoNoteApp](core/app.py)
 
 ## 更新日志
 
+### V0.4.4 (2025-10-02) - 内容块引擎（基础）
+- 数据库：
+  - 新增 `blocks` 表与 `blocks_fts` 虚表，触发器保持同步（见 [FileIndexerService._init_storage()](services/file_indexer_service.py:82)）
+- 索引：
+  - 在文件创建/修改时识别 `{{...}}`，计算 SHA-256 并去重入库（见 [FileIndexerService._index_content_blocks()](services/file_indexer_service.py:352)）
+- 补全：
+  - 新增 `content_block` 类型，FTS5 前缀搜索，回退 LIKE（见 [CompletionWorker.search()](plugins/completion_service.py:30)）
+- 编辑器：
+  - `{{` 触发补全，复用弹窗，选择后插入 `{{内容}}`（见 [ReactiveEditor._check_for_completion_trigger()](plugins/editable_editor/main.py:101)、[ReactiveEditor.insert_completion()](plugins/editable_editor/main.py:157)）
+- 验收：
+  - 五条标准均通过，报告见 [acceptance_report_v0.4.4.md](acceptance_report_v0.4.4.md)
+
 ### V0.4.3 (2025-10-02) - 命令面板 (Command Palette)
-- 新功能:
-  - 命令面板 UI（[core/command_palette.py](core/command_palette.py)）：分组展示（app/file/misc）、实时子串过滤、↑/↓/Enter/双击、Esc 关闭。
-  - 全局快捷键：Ctrl+P / Cmd+P 打开面板（[core/app.py](core/app.py)），含事件过滤兜底，避免快捷键冲突。
-  - 工具启动器 Dock：可移动/可隐藏，右键主窗口空白处可开关各面板（[plugins/tool_launcher.py](plugins/tool_launcher.py)）。
-- 架构:
-  - 引入命令模式：定义 [core/command.py](core/command.py) 的 BaseCommand。
-  - 无 UI 命令服务：提供 CommandRegistry 与装饰器注册（[plugins/command_service.py](plugins/command_service.py)）。
-  - AppContext 暴露 commands；插件通过装饰器即可注册命令（无需改动内核）。
-  - 内置命令：app.command_palette / file.new_note / app.about（见各插件文件）。
-- NFR:
-  - 即时打开与过滤（非阻塞 open()）、架构解耦（服务化、装饰器注册）、可扩展性（第三方插件零内核修改接入）。
-- 验收:
-  1) Ctrl+P/Cmd+P 弹出模态命令面板。
-  2) 初始列表包含“文件：新建笔记”“关于：EvoNote”等已注册命令。
-  3) 输入“笔记”时仅显示“文件：新建笔记”。
-  4) 选中“关于：EvoNote”回车后打印 `INFO: Executing command: About EvoNote` 并关闭面板。
-  5) 新增一个命令插件文件并注册，重启应用后命令自动出现在面板中。
+- 命令面板 UI、全局快捷键、命令服务与装饰器注册等（详见源码注释与历史 README）
 
-### V0.4.2b (2025-10-02) - 反向链接面板 (Backlink Panel)
-- 新功能: 右侧“反向链接”面板（QDockWidget + QListWidget），可点击来源项发起全局导航请求。
-- 服务: 新增无 UI 的 Backlink Service 插件，后台线程查询 .enotes/index.db 的 links/files，并通过总线回传结果。
-- 信号: 新增 GlobalSignalBus.active_page_changed、backlink_query_requested、backlink_results_ready；沿用 page_navigation_requested。
-- 性能: 查询在后台线程执行，UI 仅清空/填充列表，切换数千条反链无卡顿（符合 NFR-1）。
-- 解耦: 面板与服务之间仅通过全局信号通信，无直接 import（符合 NFR-2）。
-- 验收: 所有验收项均通过。
+…更早版本历史略。
 
-### V0.4.2a (2025-10-02) - 链接可点击 (Clickable Links)
-- 新功能: 编辑器内 `[[页面链接]]` 实时语义渲染（颜色+下划线）、悬停手形、左键点击发出全局导航信号。
-- 架构: 严格遵循信号驱动导航，编辑器仅发射 GlobalSignalBus.page_navigation_requested，不承担打开页面等应用逻辑；应用核心记录 INFO 日志验证链路。
-- 性能: 为 setExtraSelections 渲染更新引入 80ms 防抖，确保快速输入零卡顿。
-- 兼容: 与 V0.4.1 的补全 UI 完全兼容，可并行工作。
-- 验收: 4 项标准全部通过。
+## 计划路线图
 
-### V0.4.1 (2025-10-02) - 链接补全 UI
-- 新功能: 页面链接 `[[...]]` 搜索补全，异步弹窗，键盘交互（↑/↓/Enter/Tab/Esc）。
-- 架构: 全局信号总线解耦 UI 与服务；补全服务为无 UI 插件，采用单常驻线程处理查询。
-- 修复: Whoosh 索引初始化赋值、线程竞争与等待时机问题。
-- 验收: 详见 [V0.4.1_Acceptance_Report.md](V0.4.1_Acceptance_Report.md)。
+- V0.4.5（拟）：内容块“同步修改”（变更传播/锚定对齐）、冲突与历史、批量操作接口
 
-### V0.4.0.1 (2025-10-02) - 索引与链接基础 (验收完成)
-- **修复**: 解决了文件修改时链接重复索引的 Bug。
-- **修复**: 解决了文件删除时链接数据残留的 Bug。
-- **修复**: 彻底重构了文件重命名逻辑，确保了 `files` 表和 `links` 表的数据原子性更新。
-- **验收**: 所有功能性 (FR) 和非功能性 (NFR) 需求均已通过验收测试。
-- **新功能**: 实现了完整的后台文件监控、数据库和全文索引服务。
-- **架构**: 引入了基于任务队列的异步处理模型，确保UI流畅。
-- **依赖**: 添加了 `watchdog` 和 `whoosh`。
+## 许可协议
 
-### V0.3.2 (2025-10-01) - 响应式编辑器内核
-- **架构**: 实施了“信任框架，被动响应”的最终架构，将编辑器内核完全建立在Qt原生引擎之上。
-- **修复**: 从根本上解决了之前版本中所有的底层输入问题（如Tab键、光标错位等）。
-- **简化**: 彻底移除了自定义的 `Document` 模型和 `diff-match-patch` 依赖，大幅简化了代码库。
-- **功能**: 编辑器现在是一个功能完整的 `QPlainTextEdit`，每次内容变更都会在后台触发AST的重新解析。
-
-### V0.3.1 (2025-10-01) - AST 只读渲染器
-- **新功能**: 实现了基于 AST 的 Markdown 只读渲染器。
-- **改进**: 渲染器目前支持**标题**和**段落**的正确显示。
-
-### V0.3.0 (2025-10-01) - AST Parser Integration
-- **核心架构**: 成功集成了 `markdown-it-py` 解析库。
-
-### V0.2 (2025-10-01) - UI 骨架
-- **新功能**: 实现了完全由插件驱动的动态停靠 UI 系统。
-
-### V0.1 (2025-09-30) - 最小可行平台
-- **项目初始化**: 建立了基于微内核 + 插件的核心架构。
+MIT License

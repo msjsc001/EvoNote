@@ -132,3 +132,16 @@ cython_debug/
 
 # User-added
 docs/
+# EvoNote runtime artifacts (do not commit)
+.enotes/
+.enotes/*
+*.db-shm
+*.db-wal
+*.db-journal
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+
+# IDE configs
+.idea/

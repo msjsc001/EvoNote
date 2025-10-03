@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import queue
@@ -104,6 +105,46 @@ class FileIndexerService:
                 FOREIGN KEY (source_id) REFERENCES files (id) ON DELETE CASCADE
             )
             """)
+            # FR-1.1: Create 'blocks' table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS blocks (
+                hash TEXT PRIMARY KEY,
+                content TEXT NOT NULL
+            )
+            """)
+
+            # FR-1.2: Create 'blocks_fts' FTS5 virtual table
+            try:
+                cursor.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
+                    content,
+                    content='blocks',
+                    content_rowid='rowid'
+                )
+                """)
+                # Create triggers to keep FTS table in sync with 'blocks' table
+                cursor.execute("""
+                CREATE TRIGGER IF NOT EXISTS blocks_ai AFTER INSERT ON blocks BEGIN
+                    INSERT INTO blocks_fts(rowid, content) VALUES (new.rowid, new.content);
+                END;
+                """)
+                cursor.execute("""
+                CREATE TRIGGER IF NOT EXISTS blocks_ad AFTER DELETE ON blocks BEGIN
+                    INSERT INTO blocks_fts(blocks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+                END;
+                """)
+                cursor.execute("""
+                CREATE TRIGGER IF NOT EXISTS blocks_au AFTER UPDATE ON blocks BEGIN
+                    INSERT INTO blocks_fts(blocks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+                    INSERT INTO blocks_fts(rowid, content) VALUES (new.rowid, new.content);
+                END;
+                """)
+                self.fts_enabled = True
+                logging.info("FTS5 virtual table and triggers for 'blocks' created.")
+            except sqlite3.OperationalError as e:
+                logging.warning(f"FTS5 is not available. Will fall back to LIKE queries. Error: {e}")
+                self.fts_enabled = False
+
             conn.commit()
             conn.close()
             logging.info(f"Database schema initialized in {self.db_path}")
@@ -188,6 +229,9 @@ class FileIndexerService:
             for target_path in links:
                 cursor.execute("INSERT INTO links (source_id, target_path) VALUES (?, ?)", (file_id, target_path))
             logging.info(f"Inserted {len(links)} new links for file ID: {file_id}")
+
+            # --- Content Block Indexing (FR-2.1) ---
+            self._index_content_blocks(content, cursor)
 
             conn.commit()
             conn.close()
@@ -304,6 +348,30 @@ class FileIndexerService:
                 raise whoosh_e # Re-raise the exception to be caught by the outer try-except
         except Exception as e:
             logging.error(f"Failed to handle move from {src_path_str} to {dest_path_str}: {e}")
+
+    def _index_content_blocks(self, content: str, cursor: sqlite3.Cursor):
+        """Extracts, hashes, and indexes content blocks {{...}} into the database."""
+        # A simple but effective regex to find content within {{...}}
+        # It handles nested braces by being non-greedy and stopping at the first `}}`
+        blocks = re.findall(r"\{\{((?:.|\n)+?)\}\}", content)
+        if not blocks:
+            return
+
+        logging.info(f"Found {len(blocks)} potential content blocks to index.")
+        for block_content in blocks:
+            try:
+                # Per spec, do not strip or alter the content
+                content_hash = hashlib.sha256(block_content.encode('utf-8')).hexdigest()
+                
+                # FR-2.1.3: Use INSERT OR IGNORE to avoid duplicates
+                cursor.execute(
+                    "INSERT OR IGNORE INTO blocks (hash, content) VALUES (?, ?)",
+                    (content_hash, block_content)
+                )
+                if cursor.rowcount > 0:
+                    logging.info(f"Indexed new content block with hash: {content_hash[:8]}...")
+            except Exception as e:
+                logging.error(f"Failed to index content block: {e}")
 
 class EventHandler(FileSystemEventHandler):
     def __init__(self, task_queue: queue.Queue):
