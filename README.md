@@ -46,11 +46,13 @@ EvoNote 为此而生，它的哲学很简单：
 
 **1) 念动咒语（安装依赖）**
 ```bash
-pip install -r requirements.txt```
+pip install -r requirements.tx
+```
 
 **2) 开启传送门（运行 EvoNote）**
 ```bash
-python main.py```
+python main.py
+```
 
 > 💡 **小提示**: 首次进入时，你的领地里会出现一个叫 `.enotes` 的小精灵小屋，里面住着你的知识管家（数据库）和图书管理员（索引）。它已经被施了“隐身术”（加入了 .gitignore），你无需在意它。
 
