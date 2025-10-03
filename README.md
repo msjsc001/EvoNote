@@ -1,135 +1,192 @@
-# EvoNote - 可进化的笔记与自动化平台
+# EvoNote - 你的可进化知识与自动化伙伴 🚀
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-EvoNote 是一个以 Python 为“第一公民 API”的、可无限生长的个人知识与自动化工作台。通过微内核 + 插件架构，持续演进能力强。
+欢迎来到 EvoNote 的魔法世界！✨
 
-## 当前状态 (V0.4.4 - 内容块引擎·基础)
+请忘记那些功能固定的冰冷工具，把 EvoNote 想象成一个能与你一同成长、不断“进化”的魔法伙伴。
 
-本版本在 V0.4.3“命令面板”基础上，新增“内容块引擎（基础）”能力，围绕 `{{内容块}}` 实现了完整后台链路：
-- 内容即地址：任何 `{{...}}` 被视为内容块，其身份由内容字符串的 SHA-256 哈希标识（严格不做 strip）。
-- 后台索引：在文件变更时自动识别并写入 SQLite 的 `blocks` 表，并建立 FTS5 搜索索引。
-  - 表创建与初始化见 [FileIndexerService._init_storage()](services/file_indexer_service.py:82)
-  - 内容块提取、哈希与入库见 [FileIndexerService._index_content_blocks()](services/file_indexer_service.py:352)
-- 补全服务：新增 `completion_type='content_block'`，基于 `blocks_fts` 实时前缀搜索；若 FTS5 不可用则回退 `LIKE`。
-  - 类型分流见 [CompletionWorker.search()](plugins/completion_service.py:30)
-- 编辑器交互：在输入 `{{` 后复用已有补全 UI 弹出候选，选中后插入 `{{候选内容}}`。
-  - 触发逻辑见 [ReactiveEditor._check_for_completion_trigger()](plugins/editable_editor/main.py:101)
-  - 结果填充见 [ReactiveEditor._on_completion_results_ready()](plugins/editable_editor/main.py:145)
-  - 插入逻辑见 [ReactiveEditor.insert_completion()](plugins/editable_editor/main.py:157)
+它不仅仅是一个笔记软件，更是一个以 **Markdown + Python** 为核心咒语，拥有无限可能性的个人知识与自动化城堡。在这里，**你的想象力是魔法的唯一边界**。
 
-V0.4.4 明确不包含“同步修改”等高级能力，后续版本实现。
+---
 
-## 快速开始
+## 🧠 EvoNote的哲学：数据永生，功能自由
 
-1) 安装依赖
+你是否曾被某个笔记软件“绑架”？你的奇思妙想被锁在特定的格式里，强大的功能却总差那么一点点，无法完全满足你的需求。
+
+EvoNote 为此而生，它的哲学很简单：
+
+- **✍️ Markdown · 永恒的知识羊皮卷**
+  EvoNote 相信，笔记是思想的沉淀，它应该像古老的羊皮卷一样，属于你并流传百年。因此，它选择 `Markdown` 这种开放、人类可读的纯文本格式。无论未来世界如何变迁，你的知识永远清晰、可控、属于你。
+
+- **🐍 Python · 自由的功能魔法棒**
+  EvoNote 相信，最懂你的魔法师就是你自己。因此，它选择 `Python` 这个强大、易学且拥有无限生态的语言作为你的“魔法棒”。在 EvoNote 中，**每一个功能都是一个独立的 Python 魔法卷轴（插件）**。你可以像拼乐高一样，自由组合、修改，甚至用几行 Python 代码（或者让 AI 帮你写！）创造一个全新的魔法，打造一个完全为你定制的专属城堡。
+
+---
+
+## ✨ 核心优势：为什么EvoNote与众不同？
+
+- **🚀 无限扩展，随你进化**
+  EvoNote 的心脏是一个极简的“魔法核心”，所有的功能都由可插拔的“魔法卷轴”（插件）提供。无论是翻译工具、数据图表，还是 AI 助手，你都可以轻松地为它增添新的魔法。
+
+- **🕊️ 告别锁定，数据自由**
+  你的所有笔记都是标准的 `.md` 羊皮卷，安稳地存放在你自己的“领地”（电脑）上。没有专有格式，没有云端束缚。你可以随时用任何工具打开、传承你的知识。
+
+- **🧩 极致解耦，稳定灵活**
+  在城堡里，所有“魔法卷轴”都通过一个“传声螺”（全局信号总线）来沟通，彼此保持独立。这意味着你可以随意增删魔法，而不用担心城堡会塌方。这赋予了 EvoNote 极高的稳定性和灵活性。
+
+- **🤖 AI 友好，拥抱未来**
+  Python 是 AI 时代的通用咒语。这意味着你可以轻松地将各种强大的 AI 魔法（如 GPT、Gemini 等）在不懂任何编程的情况下就做一个插件集成到你的笔记工作流中，让你的知识库真正“活”起来。（后边我会出教程）
+
+---
+
+## 🚀 快速上手：开启你的魔法之旅
+
+准备好了吗，冒险者？只需两步，就能进入 EvoNote 的世界：
+
+**1) 念动咒语（安装依赖）**
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt```
+
+**2) 开启传送门（运行 EvoNote）**
+```bash
+python main.py```
+
+> 💡 **小提示**: 首次进入时，你的领地里会出现一个叫 `.enotes` 的小精灵小屋，里面住着你的知识管家（数据库）和图书管理员（索引）。它已经被施了“隐身术”（加入了 .gitignore），你无需在意它。
+
+---
+
+## 🎮 新手任务：像玩游戏一样探索 EvoNote
+
+欢迎来到新手村！让我们通过几个小任务，解锁 EvoNote 的基本玩法吧！
+
+### 任务一：召唤“命令圣坛”
+
+在任何地方，按下 `Ctrl+P`（苹果电脑是 `Cmd+P`），你会召唤出一个悬浮的“命令圣坛”。这里是所有快捷魔法的入口。
+
+- **试试看**：在圣坛里输入“新建”，你会看到“文件：新建笔记”的选项，回车就能创造一张新的羊皮卷！
+
+### 任务二：建立知识传送门
+
+知识不应该是孤岛。在 EvoNote 里，你可以轻松地将它们连接起来。
+
+- **试试看**：
+  1.  我们已经为你准备了 `Note A.md` 和 `Note B.md` 两张羊皮卷。
+  2.  打开 `Note A.md`，在里面输入 `[[Note B]]`。
+  3.  看！`[[Note B]]` 是不是变成了蓝色还带下划线？把鼠标放上去，光标会变成小手，**点击它**！你会瞬间被传送到 `Note B.md`！
+  4.  当你输入 `[[No` 的时候，聪明的图书管理员还会弹出提示，帮你补全笔记名哦！
+
+### 任务三：创造可复用的“知识结晶”
+
+有些知识或想法，你可能会在很多地方重复使用。把它们变成“知识结晶”吧！
+
+- **试试看**：
+  1.  在 `Note A.md` 里，输入 `{{这是一个重要的想法}}`。这个想法就被提炼成了一块独一无二的“知识结晶”。
+  2.  现在，去 `Note B.md`，尝试输入 `{{这是`，补全列表是不是出现了？选择它，这块“结晶”就被完美地复用了！
+
+恭喜你，新手任务完成！你已经掌握了在 EvoNote 世界里穿梭和创造的基本技能！
+
+---
+
+## 🛠️ 进阶魔法：如何创造你自己的“魔法卷轴”（插件编写）？
+
+想为 EvoNote 添加一个新魔法？你只需要创造一个 Python 魔法卷轴！
+
+例如，我们来写一个点击菜单栏就打印 "Hello!" 的魔法 `hello_plugin.py`：
+
+```python
+# plugins/hello_plugin.py
+
+from PySide6.QtWidgets import QMenu
+from PySide6.QtGui import QAction
+
+# 1. 定义一个魔法师类
+class HelloPlugin:
+    def __init__(self, app_context):
+        self.app_context = app_context
+        self.main_window = app_context.ui_manager.main_window
+
+        # 2. 找到城堡的菜单栏，添加一个新魔法
+        menu = self.main_window.menuBar().addMenu("Hello")
+        action = QAction("Say Hello", self.main_window)
+        action.triggered.connect(self.say_hello)
+        menu.addAction(action)
+
+    def say_hello(self):
+        print("Hello! This is your first magic!")
+
+# 3. 告诉 EvoNote 如何召唤你的魔法师
+def create_plugin(app):
+    return HelloPlugin(app.app_context)
 ```
 
-2) 运行应用
-```bash
-python main.py
+把它放进 `plugins` 文件夹，重启 EvoNote，你就会在菜单栏看到 "Hello" 选项。看，你已经是一个魔法师了！
+
+---
+
+## 🗺️ 城堡结构导览
+
+想深入探索 EvoNote 城堡的内部构造吗？这份地图将指引你：
+
+```mermaid
+graph TD
+    A["main.py (城堡的魔法之源)"] --> B{"core (驱动城堡的心脏)"};
+    B --> B1["app.py (大管家)"];
+    B --> B2["plugin_manager.py (魔法卷轴管理员)"];
+    B --> B3["signals.py (传声螺)"];
+    B --> B4["ui_manager.py (炼金工房, 负责外观)"];
+    B --> B5["command.py (命令圣坛的基石)"];
+    B --> B6["command_palette.py (命令圣坛的UI)"];
+    B --> B7["api.py (与外界沟通的信使)"];
+    B --> B8["parsing_service.py (羊皮卷阅读者)"];
+    B --> B9["rendering_service.py (羊皮卷绘画者)"];
+
+    A --> C{"services (辛勤工作的地精工坊)"};
+    C --> C1["file_indexer_service.py (图书管理员)"];
+
+    A --> D{"plugins (存放所有魔法卷轴的书架)"};
+    D --> D1["editable_editor (魔法书写羽毛笔)"];
+    D --> D2["completion_service.py (智慧精灵, 提供补全建议)"];
+    D --> D3["file_browser_plugin.py (领地地图)"];
+    D --> D4["backlink_panel.py (记忆水晶球, 显示谁提到了我)"];
+    D --> D5["... (你的下一个绝妙魔法！)"];
+
+    A --> E[".enotes (小精灵的家, 无需打扰)"];
+    E --> E1["index.db (知识账本)"];
+    E --> E2["whoosh_index (快速检索目录)"];
 ```
 
-3) 体验要点
-- 在编辑器任一笔记中输入：`{{Hello World}}`，稍候后台会将该内容哈希写入数据库。
-- 在新笔记中输入：`{{He`，应弹出补全列表，包含“Hello World”；选择后会插入 `{{Hello World}}`。
-- 再将其改成 `{{Hello EvoNote}}`，数据库将新增一条新内容块记录，旧记录仍在。
+---
 
-提示：首次运行会在仓库根创建运行时目录 `.enotes/`（包含 `index.db` 与 Whoosh 索引）。该目录属于运行产物，默认不应提交到版本库。
+## 📜 历史的篇章 (更新日志)
 
-## 架构概览
+- **V0.4.4 (2025-10-02) - 知识结晶**: 引入了 `{{内容块}}` 的魔法，实现了后台索引和实时补全。
+- **V0.4.3 (2025-10-02) - 命令圣坛**: 加入了 `Ctrl+P` 命令面板，让操作像大法师一样迅捷。
+- **V0.4.2b (2025-10-02) - 记忆水晶球**: 新增右侧“反向链接”面板，可查看哪些笔记链接到了当前笔记。
+- **V0.4.2a (2025-10-02) - 传送门激活**: 编辑器内的 `[[页面链接]]` 变得可以点击，实现了笔记间的快速传送。
+- **V0.4.1 (2025-10-02) - 智慧的低语**: 在输入 `[[` 时，智慧精灵会低语提示，帮��自动补全笔记标题。
+- **V0.4.0.1 (2025-10-02) - 地基加固**: 修复了图书管理员的多个bug，重构了重命名逻辑，让知识库更稳固。
+- **V0.3.2 (2025-10-01) - 羽毛笔升级**: 编辑器内核全面升级，书写体验如丝般顺滑。
+- **V0.3.1 (2025-10-01) - 羊皮卷显影**: 实现了基于 AST 的 Markdown 只读渲染，让文字有了样式。
+- **V0.3.0 (2025-10-01) - 获得阅读能力**: 成功集成了 `markdown-it-py` 解析库，让城堡能读懂 Markdown。
+- **V0.2 (2025-10-01) - 城堡骨架**: 实现了完全由插件驱动的动态停靠 UI 系统。
+- **V0.1 (2025-09-30) - 创世之初**: 建立了基于微内核 + 插件的最小可行城堡。
 
-- 微内核
-  - 应用入口与主窗口： [EvoNoteApp.run()](core/app.py:185)
-  - 插件系统： [PluginManager](core/plugin_manager.py)
-  - UI 容器： [UIManager](core/ui_manager.py)
-  - 全局总线： [GlobalSignalBus](core/signals.py)
+---
 
-- 后台服务
-  - 文件与索引服务： [FileIndexerService](services/file_indexer_service.py)
-    - 数据库表：`files`, `links`, 新增 `blocks`；FTS5 虚表：`blocks_fts`
-    - Whoosh 全文索引用于页面/路径搜索（与内容块索引互不干扰）
+## 🚀 未来的史诗 (路线图)
 
-- 插件
-  - 编辑器（可编辑 + 补全 UI）： [ReactiveEditor](plugins/editable_editor/main.py)
-  - 补全服务（无 UI）： [CompletionServicePlugin](plugins/completion_service.py)
+- **V0.4.5 (拟): 知识结晶的共鸣**
+  实现“知识结晶”的同步修改，当一块结晶变化时，所有复用它的地方都会产生共鸣，同步更新。
+- **V0.5.0 (拟): 魔法咒语增强**
+  提供更强大、更易用的魔法棒（Python API），让你能更轻松地创造毁天灭地的强大魔法。
+- **长远的目标**:
+  - 建立一个伟大的魔法师联盟（插件社区）。
+  - 召唤强大的 AI 仆从，实现智能摘要、问答和自动化整理。
+  - 探索这个世界的无限可能性...
 
-## 功能要点 (V0.4.4)
+---
 
-- 内容即地址（Content-Addressable）
-  - 对 `{{...}}` 的纯文本内容计算 `hashlib.sha256(content).hexdigest()`，作为唯一身份 ID。
-- 去重入库
-  - 使用 `INSERT OR IGNORE` 保证相同内容仅有一条 `blocks` 记录。
-- 实时补全
-  - `completion_type='content_block'` 触发后，优先查询 `blocks_fts`，否则回退 `LIKE` 前缀。
-- UI 解耦
-  - UI 通过总线发射与接收补全请求/结果：详见 [CompletionWorker.search()](plugins/completion_service.py:30)、[ReactiveEditor._on_completion_results_ready()](plugins/editable_editor/main.py:145)
+## 📄 联盟契约 (许可协议)
 
-## 版本升级小抄 (从 V0.4.3 升级到 V0.4.4)
-
-无需手动迁移。首次启动会自动：
-- 确保 `.enotes/` 与子目录存在
-- 自动在 `index.db` 中创建/迁移 `blocks` 与 `blocks_fts`（若 FTS5 不可用会继续正常运行，改为 LIKE 查询）
-
-## 验收摘要 (SRS V0.4.4 第7节)
-
-以下五条标准均已通过，详见报告：
-- 在笔记中输入 `{{Hello World}}`，`blocks` 表新增以其哈希为键的记录。
-- 在另一笔记重复 `{{Hello World}}`，记录数不增加（去重生效）。
-- 输入 `{{He` 出现补全，其中包含“Hello World”。
-- 选择补全项后插入 `{{Hello World}}`。
-- 修改为 `{{Hello EvoNote}}` 后，数据库新增新块记录，旧记录保留。
-
-报告文档： [acceptance_report_v0.4.4.md](acceptance_report_v0.4.4.md)
-
-## 项目结构（简要）
-
-- 核心与服务
-  - [core/](core)
-  - [services/file_indexer_service.py](services/file_indexer_service.py)
-- 插件
-  - [plugins/editable_editor/](plugins/editable_editor)
-  - [plugins/completion_service.py](plugins/completion_service.py)
-- 运行时（不提交）
-  - [.enotes/](.enotes) 运行时数据库与索引（已列入 .gitignore）
-
-仓库保留了少量示例/测试笔记（如 `Note A.md`、`Note B.md`）以便快速体验；它们不影响程序功能，可按需删除或替换为你的笔记。
-
-## 故障排查
-
-- 没有看到补全
-  - 确认已输入 `{{` 且有前缀（如 `{{He`）
-  - 查看启动日志，若见 “Falling back to LIKE…” 也属正常（FTS5 不可用时的回退）
-- 数据未入库
-  - 等待 1~2 秒后台索引；或查看控制台是否有异常堆栈
-- Windows 中文输入法导致快捷键冲突
-  - 已通过全局事件过滤兜底逻辑降低冲突概率，详见 [EvoNoteApp](core/app.py)
-
-## 更新日志
-
-### V0.4.4 (2025-10-02) - 内容块引擎（基础）
-- 数据库：
-  - 新增 `blocks` 表与 `blocks_fts` 虚表，触发器保持同步（见 [FileIndexerService._init_storage()](services/file_indexer_service.py:82)）
-- 索引：
-  - 在文件创建/修改时识别 `{{...}}`，计算 SHA-256 并去重入库（见 [FileIndexerService._index_content_blocks()](services/file_indexer_service.py:352)）
-- 补全：
-  - 新增 `content_block` 类型，FTS5 前缀搜索，回退 LIKE（见 [CompletionWorker.search()](plugins/completion_service.py:30)）
-- 编辑器：
-  - `{{` 触发补全，复用弹窗，选择后插入 `{{内容}}`（见 [ReactiveEditor._check_for_completion_trigger()](plugins/editable_editor/main.py:101)、[ReactiveEditor.insert_completion()](plugins/editable_editor/main.py:157)）
-- 验收：
-  - 五条标准均通过，报告见 [acceptance_report_v0.4.4.md](acceptance_report_v0.4.4.md)
-
-### V0.4.3 (2025-10-02) - 命令面板 (Command Palette)
-- 命令面板 UI、全局快捷键、命令服务与装饰器注册等（详见源码注释与历史 README）
-
-…更早版本历史略。
-
-## 计划路线图
-
-- V0.4.5（拟）：内容块“同步修改”（变更传播/锚定对齐）、冲突与历史、批量操作接口
-
-## 许可协议
-
-MIT License
+本项目采用 **MIT License**。欢迎你自由地使用、传承和创造。
