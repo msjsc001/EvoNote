@@ -1,9 +1,12 @@
 # plugins/editable_editor/main.py
 import re
 import logging
-from PySide6.QtWidgets import QPlainTextEdit, QWidget, QDockWidget, QCompleter, QTextEdit
+import sqlite3
+import hashlib
+from PySide6.QtWidgets import QPlainTextEdit, QWidget, QDockWidget, QCompleter, QTextEdit, QPushButton, QHBoxLayout
+from pathlib import Path
 from PySide6.QtCore import Slot, Qt, QStringListModel, QTimer
-from PySide6.QtGui import QKeyEvent, QTextCursor, QTextCharFormat, QColor
+from PySide6.QtGui import QKeyEvent, QInputMethodEvent, QTextCursor, QTextCharFormat, QColor
 from plugins.editor_plugin_interface import EditorPluginInterface
 from core.parsing_service import parse_markdown
 from core.signals import GlobalSignalBus
@@ -29,9 +32,15 @@ class ReactiveEditor(QPlainTextEdit):
 
         self.document().contentsChanged.connect(self._on_contents_changed)
         GlobalSignalBus.completion_results_ready.connect(self._on_completion_results_ready)
-        
+        GlobalSignalBus.active_page_changed.connect(self.on_active_page_changed)
+        # ST-16: subscribe to vault state changes
+        GlobalSignalBus.vault_state_changed.connect(self.on_vault_state_changed)
+         
         self.setPlainText("# Welcome to EvoNote\n\nStart typing...")
         self.last_completion_prefix = None
+        # ST-16: initial editor flags (will be updated via vault_state_changed or plugin injection)
+        self._has_active_vault = True
+        self._completion_enabled = True
         # Current active file path for this editor instance (relative, with extension)
         # FR-2: Used to broadcast active page on focus.
         self.current_file_path = "Note A.md"
@@ -52,30 +61,167 @@ class ReactiveEditor(QPlainTextEdit):
         # Initial render for any pre-filled [[links]]
         self._schedule_render_update()
 
+        # V0.4.5 Content Block Sync UI state
+        self._db_path = getattr(self, "_db_path", None)
+        self._active_block = None  # {'start': int, 'end': int, 'original_content': str, 'original_hash': str}
+        self._block_overlay = None
+        self._block_debounce_ms = 250
+        self._block_timer = QTimer(self)
+        self._block_timer.setSingleShot(True)
+        self._block_timer.timeout.connect(self._on_block_debounce_timeout)
+
+        # P2-10: Keep overlay anchored on scroll/caret move/viewport updates
+        try:
+            self.cursorPositionChanged.connect(self._reposition_overlay)
+        except Exception:
+            pass
+        try:
+            self.verticalScrollBar().valueChanged.connect(lambda _: self._reposition_overlay())
+        except Exception:
+            pass
+
     def keyPressEvent(self, event: QKeyEvent):
         if self.completer.popup().isVisible():
             if event.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Tab, Qt.Key_Backtab):
                 event.ignore()
                 return
 
+        # P2-02: capture snapshot of the current {{...}} block before edit
+        try:
+            self._capture_snapshot_pre_edit()
+        except Exception:
+            pass
+
         super().keyPressEvent(event)
         # Also trigger completion check from key event to be robust
         self._check_for_completion_trigger()
+        # Schedule block change detection debounce (P2-03)
+        try:
+            self._schedule_block_check()
+        except Exception:
+            pass
+
+    def inputMethodEvent(self, event: QInputMethodEvent):
+        """Ensure IME composition/commit also triggers snapshot and completion checks (ST-08)."""
+        super().inputMethodEvent(event)
+        try:
+            self._capture_snapshot_pre_edit()
+        except Exception:
+            pass
+        self._check_for_completion_trigger()
+        try:
+            self._schedule_block_check()
+        except Exception:
+            pass
 
     def focusOutEvent(self, event):
-        """Hide completion popup when the editor loses focus."""
+        """Hide completion popup and overlay on focus loss without accepting edits (ST-08)."""
         self.completer.popup().hide()
+        try:
+            if getattr(self, "_block_overlay", None) and self._block_overlay.isVisible():
+                # Only hide overlay; do not accept as '新块'
+                self._hide_block_overlay(reset_state=False)
+        except Exception:
+            pass
         super().focusOutEvent(event)
 
     def focusInEvent(self, event):
         """Broadcast active page when the editor gains focus (FR-2)."""
         super().focusInEvent(event)
+        # ST-16: Suppress broadcast when no active vault
+        if not getattr(self, "_has_active_vault", True):
+            return
         try:
             page_path = getattr(self, "current_file_path", "Note A.md")
         except Exception:
             page_path = "Note A.md"
         GlobalSignalBus.active_page_changed.emit(page_path)
 
+    @Slot(str)
+    def on_active_page_changed(self, page_path: str):
+        """
+        ST-05: Load file content when the active page changes.
+        Expects page_path to be vault-relative and include '.md'.
+        """
+        try:
+            svc = getattr(getattr(self, "app_context", None), "file_indexer_service", None)
+            vault = getattr(svc, "vault_path", ".")
+            base = Path(vault) if vault else Path(".")
+        except Exception:
+            base = Path(".")
+        try:
+            abs_path = (base / page_path).resolve(strict=False)
+            self._load_file(abs_path)
+            self.current_file_path = page_path
+            try:
+                self.completer.popup().hide()
+            except Exception:
+                pass
+            try:
+                self._hide_block_overlay(reset_state=True)
+            except Exception:
+                pass
+        except Exception as e:
+            logging.warning(f"Failed to load page '{page_path}': {e}")
+            try:
+                self.setPlainText("")
+            except Exception:
+                pass
+
+    @Slot(bool, str)
+    def on_vault_state_changed(self, has_vault: bool, vault_path: str):
+        """ST-16: Toggle editor behaviors when vault availability changes."""
+        try:
+            self._has_active_vault = bool(has_vault)
+            self._completion_enabled = bool(has_vault)
+        except Exception:
+            self._has_active_vault = bool(has_vault)
+            self._completion_enabled = bool(has_vault)
+        # Always hide completion popup when state flips
+        try:
+            self.completer.popup().hide()
+        except Exception:
+            pass
+        # Hide any block overlay
+        try:
+            self._hide_block_overlay(reset_state=True)
+        except Exception:
+            pass
+        if not has_vault:
+            # Read-only and welcome banner
+            try:
+                self.setReadOnly(True)
+            except Exception:
+                pass
+            try:
+                self.setPlainText("欢迎使用EvoNote，请通过 工具栏->库管理 选择你的某个文件夹为库")
+            except Exception:
+                pass
+        else:
+            # Re-enable editing; do not force-load any page here.
+            try:
+                self.setReadOnly(False)
+            except Exception:
+                pass
+ 
+    def _load_file(self, abs_path: Path):
+        """Read UTF-8 file and set editor content. On error, clear content; never crash."""
+        text = ""
+        try:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            # Allow empty new files
+            text = ""
+        except Exception as e:
+            logging.warning(f"Error reading '{abs_path}': {e}")
+            text = ""
+        self.setPlainText(text)
+        try:
+            self._schedule_render_update()
+        except Exception:
+            pass
+ 
     @Slot()
     def _on_contents_changed(self):
         """
@@ -96,10 +242,30 @@ class ReactiveEditor(QPlainTextEdit):
         current_line_text = cursor.block().text()[:cursor.positionInBlock()]
         logging.info(f"contentsChanged; current_line_text='{current_line_text}'")
         
+        # ST-08: ensure snapshot capture for IME/content-changed path
+        try:
+            self._capture_snapshot_pre_edit()
+        except Exception:
+            pass
+
         self._check_for_completion_trigger()
+
+        # Schedule block change detection debounce (P2-03)
+        try:
+            self._schedule_block_check()
+        except Exception:
+            pass
 
     def _check_for_completion_trigger(self):
         """Checks if the text around the cursor should trigger a completion."""
+        # ST-16: Disable completion when no active vault
+        if not getattr(self, "_completion_enabled", True):
+            try:
+                self.completer.popup().hide()
+            except Exception:
+                pass
+            self.last_completion_prefix = None
+            return
         cursor = self.textCursor()
         current_line_text = cursor.block().text()[:cursor.positionInBlock()]
         
@@ -156,6 +322,13 @@ class ReactiveEditor(QPlainTextEdit):
     @Slot(str, str, list)
     def _on_completion_results_ready(self, completion_type, query_text, results):
         logging.info(f"Received completion results: type={completion_type}, count={len(results)}")
+        # ST-16: Ignore completion updates when disabled
+        if not getattr(self, "_completion_enabled", True):
+            try:
+                self.completer.popup().hide()
+            except Exception:
+                pass
+            return
         # FR-4.2: Reuse completion UI for both page links and content blocks
         if completion_type == 'page_link' or completion_type == 'content_block':
             self.completion_model.setStringList(results)
@@ -199,6 +372,222 @@ class ReactiveEditor(QPlainTextEdit):
             cursor.insertText(f"{left}{completion_text}{right}")
             self.setTextCursor(cursor)
             self.completer.popup().hide()
+
+    # --- Content Block Sync UI (V0.4.5) ---
+
+    def _capture_snapshot_pre_edit(self):
+        """Capture original content and hash of the {{...}} block under caret before edit (P2-02)."""
+        text = self.toPlainText()
+        pos = self.textCursor().position()
+        span = self._find_block_span_at_pos(pos, text)
+        if not span:
+            # Left any block; clear state and hide overlay
+            self._active_block = None
+            self._hide_block_overlay(reset_state=False)
+            return
+        start, end, content = span
+        # If we already track this exact block span, do not overwrite snapshot
+        if self._active_block and self._active_block.get("start") == start and self._active_block.get("end") == end:
+            return
+        self._active_block = {
+            "start": start,
+            "end": end,
+            "original_content": content,
+            "original_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        }
+        # Any new block snapshot should hide stale overlay
+        self._hide_block_overlay(reset_state=False)
+
+    def _schedule_block_check(self):
+        """Debounce block modification detection (P2-03)."""
+        if not self._active_block:
+            self._hide_block_overlay(reset_state=False)
+            return
+        text = self.toPlainText()
+        pos = self.textCursor().position()
+        span = self._find_block_span_at_pos(pos, text)
+        if not span:
+            self._hide_block_overlay(reset_state=True)
+            return
+        _, _, current_content = span
+        if current_content != self._active_block.get("original_content", ""):
+            try:
+                self._block_timer.start(self._block_debounce_ms)
+            except Exception:
+                pass
+        else:
+            # No change; ensure overlay hidden
+            try:
+                self._block_timer.stop()
+            except Exception:
+                pass
+            self._hide_block_overlay(reset_state=False)
+
+    def _get_current_block_content_and_span(self):
+        text = self.toPlainText()
+        pos = self.textCursor().position()
+        return self._find_block_span_at_pos(pos, text)
+
+    def _find_block_span_at_pos(self, pos: int, text: str):
+        """Return (start, end, content) for the {{...}} enclosing pos, else None."""
+        for m in re.finditer(r"\{\{((?:.|\n)+?)\}\}", text, flags=re.DOTALL):
+            if m.start() <= pos < m.end():
+                return m.start(), m.end(), m.group(1)
+        return None
+
+    def _on_block_debounce_timeout(self):
+        """After debounce, if block modified and refcount>1, show overlay (P2-03, P2-04, P2-05)."""
+        if not self._active_block:
+            return
+        current = self._get_current_block_content_and_span()
+        if not current:
+            self._hide_block_overlay(reset_state=True)
+            return
+        _, _, current_content = current
+        if current_content == self._active_block.get("original_content", ""):
+            self._hide_block_overlay(reset_state=False)
+            return
+
+        # Query ref count
+        old_hash = self._active_block.get("original_hash")
+        refcount = 0
+        try:
+            refcount = self._query_block_reference_count(old_hash)
+        except Exception as e:
+            logging.warning(f"Refcount query failed: {e}")
+        if refcount > 1:
+            self._show_block_overlay()
+        else:
+            # No need to bother user for singly-referenced blocks
+            self._hide_block_overlay(reset_state=False)
+
+    def _query_block_reference_count(self, block_hash: str) -> int:
+        """Return COUNT(DISTINCT file_path) from block_instances (P2-04)."""
+        if not block_hash or not getattr(self, "_db_path", None):
+            return 0
+        try:
+            conn = sqlite3.connect(self._db_path)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(DISTINCT file_path) FROM block_instances WHERE block_hash = ?", (block_hash,))
+            row = cur.fetchone()
+            conn.close()
+            return int(row[0]) if row and row[0] is not None else 0
+        except Exception as e:
+            logging.warning(f"Failed to query block_instances: {e}")
+            return 0
+
+    def _show_block_overlay(self):
+        """Create and show semi-transparent overlay with three actions (P2-05/06/07/08/09)."""
+        if self._block_overlay is None:
+            w = QWidget(self.viewport())
+            w.setAttribute(Qt.WA_StyledBackground, True)
+            w.setStyleSheet("background: rgba(32,32,32,0.75); border-radius: 6px;")
+            layout = QHBoxLayout(w)
+            layout.setContentsMargins(8, 4, 8, 4)
+            layout.setSpacing(8)
+
+            btn_sync = QPushButton("全局更新", w)
+            btn_new = QPushButton("转为新块", w)
+            btn_cancel = QPushButton("取消", w)
+            for b in (btn_sync, btn_new, btn_cancel):
+                b.setCursor(Qt.PointingHandCursor)
+                b.setStyleSheet("QPushButton { color: #fafafa; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.2); padding: 4px 8px; border-radius: 4px; } QPushButton:hover { background: rgba(255,255,255,0.15); }")
+
+            layout.addWidget(btn_sync)
+            layout.addWidget(btn_new)
+            layout.addWidget(btn_cancel)
+
+            btn_cancel.clicked.connect(self._on_overlay_cancel_clicked)
+            btn_new.clicked.connect(self._on_overlay_new_block_clicked)
+            btn_sync.clicked.connect(self._on_overlay_sync_clicked)
+
+            self._block_overlay = w
+
+        self._block_overlay.show()
+        self._reposition_overlay()
+
+    def _reposition_overlay(self):
+        """Anchor overlay to just below the end of the modified block (P2-05)."""
+        try:
+            if not self._block_overlay or not self._block_overlay.isVisible() or not self._active_block:
+                return
+            # Use current block end
+            span = self._get_current_block_content_and_span()
+            if not span:
+                return
+            start, end, _ = span
+            c = QTextCursor(self.document())
+            c.setPosition(end)
+            rect = self.cursorRect(c)
+            x = max(4, rect.left())
+            y = rect.bottom() + 6
+            # Clamp within viewport
+            vp = self.viewport().rect()
+            ow = self._block_overlay.sizeHint().width()
+            oh = self._block_overlay.sizeHint().height()
+            if x + ow > vp.right() - 4:
+                x = max(4, vp.right() - ow - 4)
+            if y + oh > vp.bottom() - 4:
+                y = max(4, vp.bottom() - oh - 4)
+            self._block_overlay.move(x, y)
+        except Exception:
+            pass
+
+    def _hide_block_overlay(self, reset_state: bool = False):
+        try:
+            if self._block_overlay:
+                self._block_overlay.hide()
+        except Exception:
+            pass
+        if reset_state:
+            self._active_block = None
+
+    def _replace_current_block_text(self, new_content: str):
+        """Replace the current block's content with new_content (without braces management outside)."""
+        span = self._get_current_block_content_and_span()
+        if not span:
+            return
+        start, end, _ = span
+        c = QTextCursor(self.document())
+        c.setPosition(start)
+        c.setPosition(end, QTextCursor.KeepAnchor)
+        c.insertText("{{" + new_content + "}}")
+        self.setTextCursor(c)
+
+    def resizeEvent(self, event):
+        """Ensure overlay follows when the editor is resized (P2-10)."""
+        super().resizeEvent(event)
+        self._reposition_overlay()
+
+    def _on_overlay_cancel_clicked(self):
+        """[取消]: revert block to original content and hide overlay (P2-06)."""
+        try:
+            if self._active_block:
+                self._replace_current_block_text(self._active_block.get("original_content", ""))
+        except Exception as e:
+            logging.warning(f"Cancel revert failed: {e}")
+        self._hide_block_overlay(reset_state=True)
+
+    def _on_overlay_new_block_clicked(self):
+        """[转为新块]: accept current edits and hide overlay (P2-07, default safe behavior)."""
+        self._hide_block_overlay(reset_state=True)
+
+    def _on_overlay_sync_clicked(self):
+        """[全局更新]: enqueue 'sync_block' task with old_hash and new_content (P2-08)."""
+        try:
+            current = self._get_current_block_content_and_span()
+            if not current or not self._active_block:
+                self._hide_block_overlay(reset_state=True)
+                return
+            _, _, new_content = current
+            old_hash = self._active_block.get("original_hash")
+            svc = getattr(getattr(self, "app_context", None), "file_indexer_service", None)
+            if svc and hasattr(svc, "task_queue"):
+                svc.task_queue.put({"type": "sync_block", "old_hash": old_hash, "new_content": new_content})
+                logging.info(f"Enqueued sync_block task for {old_hash[:8]}...")
+        except Exception as e:
+            logging.warning(f"Failed to enqueue sync_block: {e}")
+        self._hide_block_overlay(reset_state=True)
 
     # --- Live Semantic Rendering for [[Page Links]] ---
     def _schedule_render_update(self):
@@ -249,6 +638,14 @@ class ReactiveEditor(QPlainTextEdit):
 
     def mouseMoveEvent(self, event):
         """Hover effect: switch cursor to pointing hand when over a link."""
+        # ST-16: Disable link hover interactivity when no active vault
+        if not getattr(self, "_has_active_vault", True):
+            try:
+                self.viewport().setCursor(Qt.IBeamCursor)
+            except Exception:
+                pass
+            super().mouseMoveEvent(event)
+            return
         try:
             pt = event.position().toPoint()
         except AttributeError:
@@ -262,17 +659,51 @@ class ReactiveEditor(QPlainTextEdit):
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event):
-        """Click handling: emit global navigation signal when a link is clicked."""
+        """Click handling: default to '新块' if clicking elsewhere while overlay visible; navigate on [[link]] click."""
+        # ST-16: Block all interactions when no active vault
+        if not getattr(self, "_has_active_vault", True):
+            try:
+                self.completer.popup().hide()
+            except Exception:
+                pass
+            try:
+                self._hide_block_overlay(reset_state=True)
+            except Exception:
+                pass
+            event.accept()
+            return
         if event.button() == Qt.LeftButton:
             try:
-                pt = event.position().toPoint()
+                pt_editor = event.position().toPoint()
             except AttributeError:
-                pt = event.pos()
-            doc_pos = self.cursorForPosition(pt).position()
+                pt_editor = event.pos()
+
+            # Map to viewport coordinates for overlay hit testing
+            try:
+                pt_vp = self.viewport().mapFrom(self, pt_editor)
+            except Exception:
+                pt_vp = pt_editor
+
+            # P2-09: Default to '转为新块' when clicking outside the overlay
+            try:
+                if getattr(self, "_block_overlay", None) and self._block_overlay.isVisible():
+                    if not self._block_overlay.geometry().contains(pt_vp):
+                        self._on_overlay_new_block_clicked()
+            except Exception:
+                pass
+
+            doc_pos = self.cursorForPosition(pt_editor).position()
             hit = self._hit_test_link(doc_pos)
             if hit:
-                # Do not move caret; just emit navigation request and consume the event
-                GlobalSignalBus.page_navigation_requested.emit(hit["title"])
+                # Do not move caret; open in new window on Shift+Click, otherwise navigate in current editor.
+                try:
+                    mods = event.modifiers()
+                except Exception:
+                    mods = Qt.NoModifier
+                if mods & Qt.ShiftModifier:
+                    GlobalSignalBus.page_open_requested.emit(hit["title"])
+                else:
+                    GlobalSignalBus.page_navigation_requested.emit(hit["title"])
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -295,6 +726,19 @@ class EditableEditorPlugin(EditorPluginInterface):
         """
         dock_widget = QDockWidget(self.name)
         editor = ReactiveEditor()
+        # P2-01: Inject AppContext and db_path for block reference counting
+        try:
+            editor.app_context = getattr(self.app, 'app_context', None)
+            if editor.app_context and getattr(editor.app_context, 'file_indexer_service', None):
+                editor._db_path = str(editor.app_context.file_indexer_service.db_path)
+            # ST-16: Initialize editor vault state based on current AppContext
+            try:
+                cp = getattr(editor.app_context, 'current_vault_path', None) if editor.app_context else None
+                editor.on_vault_state_changed(bool(cp), str(cp) if cp else "")
+            except Exception:
+                pass
+        except Exception as e:
+            logging.warning(f"Failed to inject app context into editor: {e}")
         dock_widget.setWidget(editor)
         return dock_widget
 

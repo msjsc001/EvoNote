@@ -36,6 +36,14 @@ class _GlobalSignalBus(QObject):
         page_title (str): The target page title or path to navigate to.
     """
 
+    page_open_requested = Signal(str)
+    """
+    Emitted when the user requests to open a page in a new independent window (Shift+Click).
+
+    Args:
+        page_title (str): The target page title or path to open in a new window.
+    """
+
     # ---- Backlink Panel (new for V0.4.2b) ----
     active_page_changed = Signal(str)
     """
@@ -58,11 +66,21 @@ class _GlobalSignalBus(QObject):
     backlink_results_ready = Signal(str, list)
     """
     Emitted when backlink query results are ready.
-
+ 
     Args:
         page_path (str): The original requested page path, relative and including extension.
         results (list): A list of source page paths (relative, including extension)
                         that link to the target page.
+    """
+
+    # ---- Vault State (ST-16) ----
+    vault_state_changed = Signal(bool, str)
+    """
+    Broadcasts when the active vault availability changes.
+
+    Args:
+        has_vault (bool): Whether there is an active vault.
+        vault_path (str): Current vault absolute path; empty string when none.
     """
 # Instantiate the global bus. Import this instance to connect or emit signals.
 GlobalSignalBus = _GlobalSignalBus()

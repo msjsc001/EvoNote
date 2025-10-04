@@ -3,6 +3,7 @@ This module defines the public API that is exposed to all plugins.
 """
 from __future__ import annotations
 import typing
+from typing import Optional
 
 if typing.TYPE_CHECKING:
     from .ui_manager import UIManager
@@ -18,13 +19,15 @@ class AppContext:
         file_indexer_service: Optional service providing file indexing/search capabilities.
         commands: The CommandRegistry instance used to register/query commands.
     """
-    def __init__(self, ui_manager: 'UIManager', file_indexer_service=None, commands=None):
+    def __init__(self, ui_manager: 'UIManager', file_indexer_service=None, commands=None, current_vault_path: Optional[str] = None):
         # Core UI access
         self.ui = ui_manager
         # Service references exposed for plugins (set by the host app during startup)
         self.file_indexer_service = file_indexer_service
         # Command registry (populated by command_service plugin)
         self.commands = commands
+        # Current vault absolute path (or None when not selected)
+        self.current_vault_path = current_vault_path
 
     @property
     def main_window(self) -> 'QMainWindow':

@@ -1,6 +1,7 @@
 import sys
 import logging
 import os
+from pathlib import Path
 from PySide6.QtWidgets import QApplication, QMainWindow
 from PySide6.QtCore import Qt, QEvent, QObject
 from PySide6.QtGui import QShortcut, QKeySequence, QAction
@@ -10,8 +11,17 @@ from .ui_manager import UIManager
 from services.file_indexer_service import FileIndexerService
 from .signals import GlobalSignalBus
 from .api import AppContext
+from .config_manager import (
+    load_config,
+    save_config,
+    validate_vault_path,
+    ensure_vault_structure,
+    perform_one_time_cleanup_if_needed,
+    add_vault,
+    set_current_vault,
+)
 
-VERSION = "0.4.3"
+VERSION = "0.4.5a"
 
 class _GlobalShortcutFilter(QObject):
     """
@@ -75,12 +85,61 @@ class EvoNoteApp:
         self.main_window = MainWindow()
         self.ui_manager = UIManager(self.main_window)
         self.plugin_manager = PluginManager()
-        self.file_indexer_service = FileIndexerService(vault_path=".")
-        # Initialize AppContext early; CommandRegistry will attach later via command_service plugin
-        self.app_context = AppContext(self.ui_manager, file_indexer_service=self.file_indexer_service, commands=None)
 
-        # Connect global navigation signal (FR-3.1)
+        # Load global config early and perform one-time cleanup (program directory only)
+        app_dir = Path(__file__).resolve().parent.parent
+        try:
+            cfg = load_config()
+        except Exception as e:
+            print(f"WARNING: Failed to load config; using defaults. {e}")
+            cfg = {"version": "0.4.5a", "vaults": [], "current_vault": None, "flags": {"cleaned_program_dir_v0_4_5a": False}}
+
+        try:
+            cfg2 = perform_one_time_cleanup_if_needed(cfg, app_dir)
+            if cfg2 != cfg:
+                save_config(cfg2)
+            cfg = cfg2
+        except Exception as e:
+            print(f"WARNING: One-time cleanup step encountered error: {e}")
+
+        # Resolve initial vault for indexer service
+        initial_vault = cfg.get("current_vault")
+        vault_for_service = Path(".")
+        if isinstance(initial_vault, str) and initial_vault.strip():
+            ok, msg = validate_vault_path(initial_vault, app_dir)
+            if not ok:
+                logging.error(f"Invalid current_vault in config '{initial_vault}': {msg}. Falling back to '.'")
+            else:
+                try:
+                    ensure_vault_structure(Path(initial_vault))
+                except Exception as e:
+                    logging.warning(f"Failed to ensure vault structure at {initial_vault}: {e}")
+                else:
+                    vault_for_service = Path(initial_vault)
+
+        self.file_indexer_service = FileIndexerService(vault_path=str(vault_for_service))
+        # Initialize AppContext early; CommandRegistry will attach later via command_service plugin
+        self.app_context = AppContext(
+            self.ui_manager,
+            file_indexer_service=self.file_indexer_service,
+            commands=None,
+            current_vault_path=(str(vault_for_service) if vault_for_service != Path(".") else None),
+        )
+        # ST-16: Broadcast initial vault availability state
+        try:
+            has_vault = bool(getattr(self.app_context, "current_vault_path", None))
+            GlobalSignalBus.vault_state_changed.emit(
+                has_vault,
+                getattr(self.app_context, "current_vault_path", "") or ""
+            )
+        except Exception:
+            pass
+        # Keep references to child top-level note windows (Shift+Click)
+        self._child_note_windows = []
+
+        # Connect global navigation signal (FR-3.1) and open-in-new-window (FR-1.3)
         GlobalSignalBus.page_navigation_requested.connect(self.on_page_navigation_requested)
+        GlobalSignalBus.page_open_requested.connect(self.on_page_open_requested)
         
         # Global shortcut: Ctrl+P / Cmd+P to open Command Palette
         self.shortcut_cmd_palette_ctrl = QShortcut(QKeySequence("Ctrl+P"), self.main_window)
@@ -139,15 +198,235 @@ class EvoNoteApp:
         except Exception as e:
             print(f"WARNING: Failed to install global shortcut filter: {e}")
         
+    def switch_vault(self, new_path: str) -> None:
+        """
+        ST-03: 切换当前库（供后续 UI 调用的核心 API）
+        步骤：
+          1) validate_vault_path 校验（禁止程序目录及其子目录）
+          2) 停止旧索引服务
+          3) ensure_vault_structure(new_path) 自动确保 pages/ 与 assets/
+          4) 创建新的 FileIndexerService 并启动
+          5) 更新 AppContext（file_indexer_service 与 current_vault_path）
+          6) 保存配置（更新 current_vault，若新库不在 vaults 列表则添加）
+          7) 若存在 pages/Note A.md 则广播一次 active_page_changed，否则不广播
+        """
+        try:
+            app_dir = Path(__file__).resolve().parent.parent
+        except Exception:
+            app_dir = Path(".")
+
+        ok, msg = validate_vault_path(new_path, app_dir)
+        if not ok:
+            logging.error(f"switch_vault: rejected path '{new_path}': {msg}")
+            return
+
+        # 规范化并确保结构
+        new_root = Path(new_path).expanduser().resolve(strict=False)
+        try:
+            ensure_vault_structure(new_root)
+        except Exception as e:
+            logging.error(f"switch_vault: failed to ensure vault structure at {new_root}: {e}")
+            return
+
+        # 停止旧索引服务（幂等）
+        try:
+            if getattr(self, "file_indexer_service", None):
+                self.file_indexer_service.stop()
+        except Exception as e:
+            logging.warning(f"switch_vault: error stopping previous indexer: {e}")
+
+        # 启动新的索引服务
+        self.file_indexer_service = FileIndexerService(vault_path=str(new_root))
+        self.file_indexer_service.start()
+
+        # 更新 AppContext
+        try:
+            self.app_context.file_indexer_service = self.file_indexer_service
+            self.app_context.current_vault_path = str(new_root)
+        except Exception:
+            pass
+
+        # 持久化配置（加入 vaults、设置 current_vault）
+        try:
+            cfg = load_config()
+            cfg = add_vault(cfg, str(new_root))
+            cfg = set_current_vault(cfg, str(new_root))
+            save_config(cfg)
+        except Exception as e:
+            logging.warning(f"switch_vault: failed to persist config: {e}")
+
+        # ST-16: Broadcast vault state changed -> active
+        try:
+            GlobalSignalBus.vault_state_changed.emit(True, str(new_root))
+        except Exception:
+            pass
+
+        # 可选广播默认页面（若存在）
+        try:
+            default_rel = "pages/Note A.md"
+            if (new_root / default_rel).exists():
+                GlobalSignalBus.active_page_changed.emit(default_rel)
+        except Exception:
+            pass
     def on_page_navigation_requested(self, page_title: str):
         """
-        FR-3.2: Respond to navigation requests by logging to console.
+        ST-05: Resolve a page title/path to a concrete file under the vault, ensure it exists,
+        then broadcast active_page_changed with a vault-relative path including .md.
+        Compatible with inputs from editor ([[Title]]) and backlink panel (relative paths with extension).
         """
+        # ST-16: Block navigation when no active vault
+        try:
+            if not getattr(self.app_context, "current_vault_path", None):
+                print("INFO: no active vault, ignore navigation")
+                return
+        except Exception:
+            print("INFO: no active vault, ignore navigation")
+            return
         print(f"INFO: Navigation to page '{page_title}' requested.")
-        # Normalize to relative path with extension and broadcast active page change
-        page_path = page_title if page_title.lower().endswith('.md') else f"{page_title}.md"
-        GlobalSignalBus.active_page_changed.emit(page_path)
+        try:
+            abs_path, rel_path = self._resolve_and_ensure_page(page_title)
+            # Enqueue index update to reflect potential creation/update
+            try:
+                if hasattr(self.file_indexer_service, "task_queue"):
+                    self.file_indexer_service.task_queue.put({"type": "upsert", "path": str(abs_path)})
+            except Exception as e:
+                print(f"WARNING: Failed to enqueue upsert for {abs_path}: {e}")
+            GlobalSignalBus.active_page_changed.emit(rel_path)
+        except Exception as e:
+            print(f"ERROR: Navigation failed for '{page_title}': {e}")
 
+    def on_page_open_requested(self, page_title: str):
+        """
+        ST-06: Open the resolved note in a new independent top-level editor window (Shift+Click behavior).
+        Window title should be the note name (without .md).
+        """
+        # ST-16: Block open-in-new-window when no active vault
+        try:
+            if not getattr(self.app_context, "current_vault_path", None):
+                print("INFO: no active vault, ignore open-in-new-window")
+                return
+        except Exception:
+            print("INFO: no active vault, ignore open-in-new-window")
+            return
+        print(f"INFO: Open in new window requested for page '{page_title}'.")
+        try:
+            abs_path, rel_path = self._resolve_and_ensure_page(page_title)
+            # Keep index up-to-date (creation or touch)
+            try:
+                if hasattr(self.file_indexer_service, "task_queue"):
+                    self.file_indexer_service.task_queue.put({"type": "upsert", "path": str(abs_path)})
+            except Exception as e:
+                print(f"WARNING: Failed to enqueue upsert for {abs_path}: {e}")
+            # Open independent window
+            self._open_note_window(rel_path)
+        except Exception as e:
+            print(f"ERROR: Open-in-new-window failed for '{page_title}': {e}")
+
+    def _open_note_window(self, rel_path: str):
+        """
+        Create a lightweight QMainWindow hosting a ReactiveEditor instance and load the target note.
+        The window title is set to the note name (without .md).
+        """
+        try:
+            from plugins.editable_editor.main import ReactiveEditor
+        except Exception as e:
+            print(f"ERROR: Failed to import ReactiveEditor for new window: {e}")
+            return
+
+        win = QMainWindow()
+        try:
+            note_name = Path(rel_path).stem
+        except Exception:
+            note_name = rel_path
+        win.setWindowTitle(note_name)
+
+        editor = ReactiveEditor()
+        # Inject app context for services (db path, indexer, etc.)
+        try:
+            editor.app_context = self.app_context
+            if getattr(self.app_context, 'file_indexer_service', None):
+                editor._db_path = str(self.app_context.file_indexer_service.db_path)
+        except Exception:
+            pass
+
+        # Load file content into this editor instance only (do not broadcast globally)
+        try:
+            editor.on_active_page_changed(rel_path)
+        except Exception as e:
+            print(f"WARNING: Failed to load page in new window: {e}")
+
+        win.setCentralWidget(editor)
+        try:
+            win.resize(900, 600)
+        except Exception:
+            pass
+        win.show()
+
+        # Retain reference to prevent GC; cleanup on destroy
+        try:
+            self._child_note_windows.append(win)
+            win.destroyed.connect(lambda _: self._child_note_windows.remove(win) if win in self._child_note_windows else None)
+        except Exception:
+            pass
+
+    def _resolve_and_ensure_page(self, path_or_title: str) -> tuple[str, str]:
+        """
+        Resolve an incoming title or relative path to an absolute markdown file under the vault and ensure it exists.
+
+        Returns:
+            (abs_path_str, rel_path_str_with_ext)
+        Rules:
+            - If input has '.md' extension OR starts with 'pages/' path: treat as vault-relative.
+            - Otherwise (including inputs with path separators but without '.md'), resolve under 'pages/<title>.md'.
+            - Always normalize paths and ensure parent directories exist. Create empty file if missing.
+        """
+        # Base vault path
+        base = getattr(self.file_indexer_service, "vault_path", Path("."))
+        if not isinstance(base, Path):
+            base = Path(str(base or "."))
+
+        txt = str(path_or_title or "").strip()
+        if not txt:
+            txt = "Untitled"
+
+        p = Path(txt)
+        has_ext = p.suffix.lower() == ".md"
+        # Normalize first segment for special-case 'pages/' prefix
+        first_seg = (p.parts[0].lower() if p.parts else "")
+
+        # Treat as vault-relative when:
+        # - It already has .md extension (typical from Backlink Panel), OR
+        # - It explicitly starts with 'pages/' (avoid duplicating the prefix)
+        if has_ext or first_seg == "pages":
+            if not has_ext:
+                p = p.with_suffix(".md")
+        else:
+            # Default bucket for newly created notes: under pages/
+            p = Path("pages") / p
+            if p.suffix.lower() != ".md":
+                p = p.with_suffix(".md")
+
+        abs_path = (base / p).resolve(strict=False)
+
+        # Compute relative path to vault, including extension
+        try:
+            rel_path = abs_path.relative_to(base)
+        except Exception:
+            # Fallback to os.path.relpath when outside base (shouldn't happen)
+            rel_path = Path(os.path.relpath(str(abs_path), start=str(base)))
+        rel_str = rel_path.as_posix()
+
+        # Ensure file exists
+        if not abs_path.exists():
+            try:
+                abs_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(abs_path, "w", encoding="utf-8", newline="") as f:
+                    f.write("")
+                print(f"INFO: Created new page at {abs_path}")
+            except Exception as e:
+                raise RuntimeError(f"Failed to create page file: {abs_path} ({e})")
+
+        return str(abs_path), rel_str
     def open_command_palette(self):
         """Open the Command Palette dialog centered on the main window."""
         print("INFO: Opening Command Palette...")
@@ -204,9 +483,18 @@ class EvoNoteApp:
                         self.ui_manager.add_dock_widget(widget, area)
         
         self.main_window.show()
+ 
+        # Broadcast initial active page so panels can request data (only when a vault is active)
+        if getattr(self.app_context, "current_vault_path", None):
+            GlobalSignalBus.active_page_changed.emit('Note A.md')
+        else:
+            print("INFO: no active vault, skip initial active_page_changed")
 
-        # Broadcast initial active page so panels can request data
-        GlobalSignalBus.active_page_changed.emit('Note A.md')
+        # Enqueue a low-priority GC task (P3-02)
+        try:
+            self.file_indexer_service.task_queue.put({"type": "garbage_collect_blocks"})
+        except Exception:
+            pass
 
         # Request initial completion list after the UI is fully loaded and shown
         GlobalSignalBus.completion_requested.emit('page_link', '')

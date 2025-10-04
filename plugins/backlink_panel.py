@@ -74,7 +74,7 @@ class BacklinkPanelPlugin(QObject):
 
         self.list_widget.clear()
         for src_path in results or []:
-            label = os.path.basename(src_path) if src_path else ""
+            label = os.path.splitext(os.path.basename(src_path))[0] if src_path else ""
             item = QListWidgetItem(label or "")
             item.setToolTip(src_path)
             # Store full relative path (with extension) for navigation

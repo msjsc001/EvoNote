@@ -11,7 +11,7 @@ from core.signals import GlobalSignalBus
 class CompletionWorker(QObject):
     results_ready = pyqtSignal(list)
 
-    def __init__(self, whoosh_path='.enotes/whoosh_index', db_path='.enotes/index.db'):
+    def __init__(self, whoosh_path='.EvoNotDB/whoosh_index', db_path='.EvoNotDB/index.db'):
         super().__init__()
         self.whoosh_path = whoosh_path
         self.db_path = db_path
@@ -49,15 +49,79 @@ class CompletionWorker(QObject):
             self.results_ready.emit([])
 
     def _search_page_links(self, query_text):
-        if not self.index:
-            self.results_ready.emit([])
-            return
-        query = Prefix("path", query_text)
-        with self.index.searcher() as searcher:
-            results = searcher.search(query, limit=10)
-            paths = [hit['path'] for hit in results]
+        """
+        ST-07: Page link completion based on SQLite files table with stem-prefix matching.
+        - Return stems (no .md)
+        - Prefer pages/ directory; de-duplicate by stem (pages/ wins)
+        - Case-insensitive prefix using str.casefold()
+        - When DB missing or query fails, return empty list
+        """
+        from pathlib import Path
+        conn = None
+        try:
+            # DB not ready -> empty result
+            if not os.path.exists(self.db_path):
+                if self._is_running:
+                    self.results_ready.emit([])
+                return
+
+            q = (query_text or "").casefold()
+
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.cursor()
+            # Limit scan to keep latency bounded; Python-side filter/dedup
+            cur.execute("SELECT path FROM files LIMIT 500")
+            rows = cur.fetchall()
+
+            pages = []
+            pages_set = set()
+            others = []
+            others_set = set()
+
+            for (p,) in rows:
+                if not p:
+                    continue
+                try:
+                    stem = Path(p).stem
+                except Exception:
+                    base = os.path.basename(p)
+                    stem = os.path.splitext(base)[0]
+                if not stem:
+                    continue
+
+                # Case-insensitive prefix
+                if q and not stem.casefold().startswith(q):
+                    continue
+
+                norm = p.replace("\\", "/").lower()
+                in_pages = "/pages/" in norm or norm.startswith("pages/")
+
+                if in_pages:
+                    if stem not in pages_set:
+                        pages.append(stem)
+                        pages_set.add(stem)
+                else:
+                    if stem not in pages_set and stem not in others_set:
+                        others.append(stem)
+                        others_set.add(stem)
+
+                # Early stop once buffers are sufficiently large for final top-10
+                if len(pages) + len(others) >= 64:
+                    break
+
+            results = (pages + [s for s in others if s not in pages_set])[:10]
             if self._is_running:
-                self.results_ready.emit(paths)
+                self.results_ready.emit(results)
+        except Exception as e:
+            logging.error(f"SQLite page_link completion failed: {e}")
+            if self._is_running:
+                self.results_ready.emit([])
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
 
     def _search_content_blocks(self, query_text):
         conn = None
@@ -110,11 +174,11 @@ class CompletionServicePlugin(QObject):
                 db_path = str(getattr(fis, "db_path"))
             else:
                 # Fallback to default relative paths
-                whoosh_path = os.path.join(".enotes", "whoosh_index")
-                db_path = os.path.join(".enotes", "index.db")
+                whoosh_path = os.path.join(".EvoNotDB", "whoosh_index")
+                db_path = os.path.join(".EvoNotDB", "index.db")
         except Exception:
-            whoosh_path = os.path.join(".enotes", "whoosh_index")
-            db_path = os.path.join(".enotes", "index.db")
+            whoosh_path = os.path.join(".EvoNotDB", "whoosh_index")
+            db_path = os.path.join(".EvoNotDB", "index.db")
         self.worker = CompletionWorker(whoosh_path=whoosh_path, db_path=db_path)
         self.worker.moveToThread(self.thread)
 

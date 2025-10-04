@@ -2,7 +2,7 @@
 """
 Backlink Service Plugin (no UI)
 Listens to GlobalSignalBus.backlink_query_requested and performs asynchronous
-SQLite queries against .enotes/index.db to fetch pages linking to the target.
+SQLite queries against .EvoNotDB/index.db to fetch pages linking to the target.
 """
 
 import os
@@ -21,7 +21,7 @@ class BacklinkQueryWorker(QObject):
     """
     results_ready = pyqtSignal(str, list)  # (page_path, results)
 
-    def __init__(self, db_path='.enotes/index.db'):
+    def __init__(self, db_path='.EvoNotDB/index.db'):
         super().__init__()
         self.db_path = str(db_path)
         self._is_running = True
@@ -90,7 +90,7 @@ class BacklinkServicePlugin(QObject):
         except Exception:
             db_path = None
         if db_path is None:
-            db_path = Path(".enotes") / "index.db"
+            db_path = Path(".EvoNotDB") / "index.db"
 
         # Thread + worker setup
         self.thread = QThread()

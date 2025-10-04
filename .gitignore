@@ -145,3 +145,5 @@ Thumbs.db
 
 # IDE configs
 .idea/
+# EvoNote database directory
+.EvoNotDB/
