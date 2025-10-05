@@ -2,13 +2,14 @@ import sys
 import logging
 import os
 from pathlib import Path
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QDockWidget
 from PySide6.QtCore import Qt, QEvent, QObject
 from PySide6.QtGui import QShortcut, QKeySequence, QAction
 from .command_palette import CommandPalette
 from .plugin_manager import PluginManager
 from .ui_manager import UIManager
 from services.file_indexer_service import FileIndexerService
+from services.navigation_history_service import NavigationHistoryService
 from .signals import GlobalSignalBus
 from .api import AppContext
 from .config_manager import (
@@ -19,9 +20,10 @@ from .config_manager import (
     perform_one_time_cleanup_if_needed,
     add_vault,
     set_current_vault,
+    get_nav_history_maxlen,
 )
 
-VERSION = "0.4.5a"
+VERSION = "0.4.5b"
 
 class _GlobalShortcutFilter(QObject):
     """
@@ -86,6 +88,9 @@ class EvoNoteApp:
         self.ui_manager = UIManager(self.main_window)
         self.plugin_manager = PluginManager()
 
+        # Navigation history service (V0.4.5b)
+        self._nav_is_pointer_move = False  # 指针移动保护标志
+
         # Load global config early and perform one-time cleanup (program directory only)
         app_dir = Path(__file__).resolve().parent.parent
         try:
@@ -101,6 +106,10 @@ class EvoNoteApp:
             cfg = cfg2
         except Exception as e:
             print(f"WARNING: One-time cleanup step encountered error: {e}")
+
+        # Read navigation history max length from config and create service
+        nav_max = get_nav_history_maxlen(cfg)
+        self.nav_history = NavigationHistoryService(maxlen=nav_max)
 
         # Resolve initial vault for indexer service
         initial_vault = cfg.get("current_vault")
@@ -140,6 +149,8 @@ class EvoNoteApp:
         # Connect global navigation signal (FR-3.1) and open-in-new-window (FR-1.3)
         GlobalSignalBus.page_navigation_requested.connect(self.on_page_navigation_requested)
         GlobalSignalBus.page_open_requested.connect(self.on_page_open_requested)
+        GlobalSignalBus.back_navigation_requested.connect(self._on_back_navigation_requested)
+        GlobalSignalBus.forward_navigation_requested.connect(self._on_forward_navigation_requested)
         
         # Global shortcut: Ctrl+P / Cmd+P to open Command Palette
         self.shortcut_cmd_palette_ctrl = QShortcut(QKeySequence("Ctrl+P"), self.main_window)
@@ -246,6 +257,13 @@ class EvoNoteApp:
         except Exception:
             pass
 
+        # 清空导航历史（避免跨库污染）
+        try:
+            if getattr(self, "nav_history", None):
+                self.nav_history.clear()
+        except Exception:
+            pass
+
         # 持久化配置（加入 vaults、设置 current_vault）
         try:
             cfg = load_config()
@@ -292,8 +310,71 @@ class EvoNoteApp:
             except Exception as e:
                 print(f"WARNING: Failed to enqueue upsert for {abs_path}: {e}")
             GlobalSignalBus.active_page_changed.emit(rel_path)
+            # 历史入栈：排除由指针移动（后退/前进）触发的导航
+            try:
+                if not getattr(self, "_nav_is_pointer_move", False):
+                    if getattr(self, "nav_history", None):
+                        self.nav_history.push(rel_path)
+            except Exception as e:
+                logging.warning(f"navigation history push failed for '{rel_path}': {e}")
         except Exception as e:
             print(f"ERROR: Navigation failed for '{page_title}': {e}")
+
+    def _on_back_navigation_requested(self):
+        """
+        Handle back navigation requests from toolbar/global signal.
+        """
+        # ST-16: Block navigation when no active vault
+        try:
+            if not getattr(self.app_context, "current_vault_path", None):
+                print("INFO: no active vault, ignore back navigation")
+                return
+        except Exception:
+            print("INFO: no active vault, ignore back navigation")
+            return
+
+        dest = None
+        try:
+            if getattr(self, "nav_history", None):
+                dest = self.nav_history.back()
+        except Exception as e:
+            print(f"WARNING: back navigation failed: {e}")
+            dest = None
+
+        if dest:
+            self._nav_is_pointer_move = True
+            try:
+                GlobalSignalBus.page_navigation_requested.emit(dest)
+            finally:
+                self._nav_is_pointer_move = False
+
+    def _on_forward_navigation_requested(self):
+        """
+        Handle forward navigation requests from toolbar/global signal.
+        """
+        # ST-16: Block navigation when no active vault
+        try:
+            if not getattr(self.app_context, "current_vault_path", None):
+                print("INFO: no active vault, ignore forward navigation")
+                return
+        except Exception:
+            print("INFO: no active vault, ignore forward navigation")
+            return
+
+        dest = None
+        try:
+            if getattr(self, "nav_history", None):
+                dest = self.nav_history.forward()
+        except Exception as e:
+            print(f"WARNING: forward navigation failed: {e}")
+            dest = None
+
+        if dest:
+            self._nav_is_pointer_move = True
+            try:
+                GlobalSignalBus.page_navigation_requested.emit(dest)
+            finally:
+                self._nav_is_pointer_move = False
 
     def on_page_open_requested(self, page_title: str):
         """
@@ -324,48 +405,85 @@ class EvoNoteApp:
 
     def _open_note_window(self, rel_path: str):
         """
-        Create a lightweight QMainWindow hosting a ReactiveEditor instance and load the target note.
-        The window title is set to the note name (without .md).
+        Create a floating QDockWidget hosting a ReactiveEditor instance and load the target note.
+        The dock title is set to the note name (without .md). It can be dragged back to the dock area.
         """
         try:
             from plugins.editable_editor.main import ReactiveEditor
         except Exception as e:
-            print(f"ERROR: Failed to import ReactiveEditor for new window: {e}")
+            print(f"ERROR: Failed to import ReactiveEditor for new dock: {e}")
             return
 
-        win = QMainWindow()
+        # Resolve note name for dock title
         try:
             note_name = Path(rel_path).stem
         except Exception:
             note_name = rel_path
-        win.setWindowTitle(note_name)
 
-        editor = ReactiveEditor()
-        # Inject app context for services (db path, indexer, etc.)
         try:
-            editor.app_context = self.app_context
-            if getattr(self.app_context, 'file_indexer_service', None):
-                editor._db_path = str(self.app_context.file_indexer_service.db_path)
-        except Exception:
-            pass
-
-        # Load file content into this editor instance only (do not broadcast globally)
-        try:
-            editor.on_active_page_changed(rel_path)
+            dock = QDockWidget(note_name, self.main_window)
+            dock.setObjectName(f"note_dock::{rel_path}")  # helpful for future restore
+            dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+            # Optional: keep default features (closable, floatable, movable)
         except Exception as e:
-            print(f"WARNING: Failed to load page in new window: {e}")
+            print(f"ERROR: Failed to create QDockWidget: {e}")
+            return
 
-        win.setCentralWidget(editor)
+        # Create and wire editor
+        editor = None
         try:
-            win.resize(900, 600)
-        except Exception:
-            pass
-        win.show()
+            editor = ReactiveEditor()
+            # Inject app context for services (db path, indexer, etc.)
+            try:
+                editor.app_context = self.app_context
+                if getattr(self.app_context, 'file_indexer_service', None):
+                    editor._db_path = str(self.app_context.file_indexer_service.db_path)
+            except Exception:
+                pass
+
+            # Load file content into this editor instance only (do not broadcast globally)
+            try:
+                editor.on_active_page_changed(rel_path)
+            except Exception as e:
+                print(f"WARNING: Failed to load page in new dock: {e}")
+
+            dock.setWidget(editor)
+        except Exception as e:
+            print(f"ERROR: Failed to construct editor in dock: {e}")
+            try:
+                dock.deleteLater()
+            except Exception:
+                pass
+            return
+
+        # Add to main window dock area then float and show
+        try:
+            self.main_window.addDockWidget(Qt.RightDockWidgetArea, dock)
+            try:
+                dock.setFloating(True)
+            except Exception:
+                pass
+            try:
+                dock.resize(900, 600)
+            except Exception:
+                pass
+            dock.show()
+        except Exception as e:
+            print(f"ERROR: Failed to attach dock to main window: {e}")
+            try:
+                dock.deleteLater()
+            except Exception:
+                pass
+            return
 
         # Retain reference to prevent GC; cleanup on destroy
         try:
-            self._child_note_windows.append(win)
-            win.destroyed.connect(lambda _: self._child_note_windows.remove(win) if win in self._child_note_windows else None)
+            if not hasattr(self, "_child_note_windows"):
+                self._child_note_windows = []
+            self._child_note_windows.append(dock)
+            dock.destroyed.connect(
+                lambda _: self._child_note_windows.remove(dock) if dock in self._child_note_windows else None
+            )
         except Exception:
             pass
 

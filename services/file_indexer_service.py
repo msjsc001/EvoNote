@@ -267,6 +267,8 @@ class FileIndexerService:
                     self._handle_delete(task["path"])
                 elif task_type == "move":
                     self._handle_move(task["src_path"], task["dest_path"])
+                elif task_type == "rename_file":
+                    self._handle_rename_file(task["src_path"], task["dest_path"])
                 elif task_type == "sync_block":
                     self._handle_sync_block(task["old_hash"], task["new_content"])
                 elif task_type == "garbage_collect_blocks":
@@ -466,6 +468,122 @@ class FileIndexerService:
                 raise whoosh_e # Re-raise the exception to be caught by the outer try-except
         except Exception as e:
             logging.error(f"Failed to handle move from {src_path_str} to {dest_path_str}: {e}")
+
+    def _handle_rename_file(self, src_path_str: str, dest_path_str: str) -> None:
+        """
+        Handles rename_file task:
+          1) Physically rename file on disk (src -> dest) with Windows-safe fallbacks
+          2) Reuse existing DB/Whoosh update logic via _handle_move
+          3) Globally replace all [[old]] references to [[new]] across the vault,
+             preserving #anchor and |alias, using atomic writes, and enqueue 'upsert'
+        """
+        try:
+            src = Path(src_path_str)
+            dest = Path(dest_path_str)
+
+            # Validation: only .md within vault, src exists and dest not exists
+            if src.suffix.lower() != ".md" or dest.suffix.lower() != ".md":
+                logging.warning(f"rename_file: only .md supported, got src={src.suffix}, dest={dest.suffix}")
+                return
+
+            try:
+                vault_root = self.vault_path.resolve(strict=False)
+                src_abs = src.resolve(strict=False)
+                dest_abs = dest.resolve(strict=False)
+            except Exception as e:
+                logging.warning(f"rename_file: resolve failed: {e}")
+                vault_root = self.vault_path
+                src_abs = src
+                dest_abs = dest
+
+            def _in_vault(p: Path) -> bool:
+                try:
+                    p.relative_to(vault_root)
+                    return True
+                except Exception:
+                    return False
+
+            if not (_in_vault(src_abs) and _in_vault(dest_abs)):
+                logging.warning(f"rename_file: paths must be within vault: src={src_abs}, dest={dest_abs}")
+                return
+
+            if not src.exists():
+                logging.warning(f"rename_file: src not found: {src}")
+                return
+            if dest.exists():
+                logging.warning(f"rename_file: dest already exists: {dest}")
+                return
+
+            # Ensure destination directory exists
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logging.warning(f"rename_file: failed to ensure dest dir {dest.parent}: {e}")
+
+            # Physical rename with fallback (Windows-friendly)
+            try:
+                src.rename(dest)
+            except Exception as e1:
+                logging.warning(f"rename_file: Path.rename failed ({e1}), fallback to shutil.move")
+                try:
+                    shutil.move(str(src), str(dest))
+                except Exception as e2:
+                    logging.error(f"rename_file: rename failed {src} -> {dest}: {e2}")
+                    return
+
+            # Reuse transactional DB + Whoosh updates
+            try:
+                self._handle_move(src_path_str, dest_path_str)
+            except Exception as e:
+                logging.error(f"rename_file: _handle_move failed: {e}")
+
+            # Prepare global link replacement
+            old_title = Path(src_path_str).stem
+            new_title = Path(dest_path_str).stem
+
+            pattern = re.compile(
+                r'\[\[\s*(?:pages/)?(' + re.escape(old_title) + r')(?P<tail>(?:#[^\]|]*)?(?:\|[^\]]*)?)\s*\]\]'
+                .replace('<', '<').replace('>', '>')
+            )
+
+            updated_files = 0
+            for file_path in self.vault_path.rglob("*.md"):
+                parts = file_path.parts
+                # Exclude internal storage directories
+                if ".EvoNotDB" in parts or ".enotes" in parts:
+                    continue
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        text = f.read()
+                except Exception as e:
+                    logging.warning(f"rename_file: cannot read {file_path}: {e}")
+                    continue
+
+                def _repl(m):
+                    tail = m.group("tail") or ""
+                    return f"[[{new_title}{tail}]]"
+
+                new_text, n = pattern.subn(_repl, text)
+                if n > 0 and new_text != text:
+                    try:
+                        self._atomic_write(file_path, new_text)
+                        updated_files += 1
+                        try:
+                            self.task_queue.put({"type": "upsert", "path": str(file_path)})
+                        except Exception as e:
+                            logging.warning(f"rename_file: failed to enqueue upsert for {file_path}: {e}")
+                    except Exception as e:
+                        logging.error(f"rename_file: atomic write failed for {file_path}: {e}")
+
+            logging.info(f"rename_file: global replacement completed; updated_files={updated_files}")
+
+            # Final upsert for the new file to ensure full recomputation of links/backrefs
+            try:
+                self.task_queue.put({"type": "upsert", "path": str(dest)})
+            except Exception as e:
+                logging.warning(f"rename_file: failed to enqueue final upsert for {dest}: {e}")
+        except Exception as e:
+            logging.exception(f"rename_file failed: {e}")
 
     def _index_content_blocks(self, content: str, cursor: sqlite3.Cursor, file_path: str):
         """Extracts, hashes, and indexes content blocks {{...}} into the database, and records instances per file."""

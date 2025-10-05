@@ -375,3 +375,130 @@ D. 反链面板
 
 - 版本号可随时回退（[core/app.py](core/app.py)）
 - 文档变更仅涉及 README 与 Mermaid/验收文本，回滚对应文件不影响执行
+# V0.4.5b 验收计划
+
+适用版本：V0.4.5b（窗口标题应显示 V0.4.5b；参见 [core/app.py](core/app.py) 的 VERSION，待D5更新）
+
+一、范围与能力边界
+- 导航与常用按键
+  - 新增“导航”QToolBar（后退/前进），按钮可拖拽自排序并持久化顺序配置
+  - 导航历史服务：记录成功页面跳转历史，前进/后退联动按钮使能
+- 窗口与编辑器
+  - Shift+点击 [[笔记名]] 在主界面内弹出浮动 QDockWidget，可拖回任意停靠区
+  - 编辑器 Dock 标题随当前笔记名自动更新
+  - Dock 标题栏支持双击重命名，入队 rename_file 任务，全库同步更新 [[引用]]
+- 索引与重命名
+  - rename_file：磁盘重命名 + SQLite/Whoosh 更新 + 全库 [[旧名]] → [[新名]] 同步 + upsert
+- 稳定性
+  - {{ 输入时的触发加固：任意输入（含 {{12）不应清空文档
+  - 自动保存：编辑停止约 800ms 后原子写入并 upsert（主/浮动编辑器统一）
+- 库管理防御
+  - UI 禁用当前库的移除
+  - 配置层防御：拒绝移除 current_vault
+
+实现基线（主要参考文件）
+- 导航工具栏：[plugins/navigation_toolbar.py](plugins/navigation_toolbar.py)
+- 导航历史服务：[services/navigation_history_service.py](services/navigation_history_service.py)
+- 信号总线（新增 back/forward/state）：[core/signals.py](core/signals.py)
+- 应用接线（历史、前进/后退、Shift+新窗）：[core/app.py](core/app.py)
+- 编辑器（Dock标题、重命名UI、自动保存、{{加固}）：[plugins/editable_editor/main.py](plugins/editable_editor/main.py)
+- 索引服务（rename_file + 全库同步 + 原子写）：[services/file_indexer_service.py](services/file_indexer_service.py)
+- 配置层（UI设置、remove_vault 防御）：[core/config_manager.py](core/config_manager.py)
+
+二、开发者验收（Dev）
+1) 导航历史与工具栏联动
+- 步骤：
+  - 启动应用并加载库，依次导航到 Note A、Note B、Another Note C（点击或 [[链接]]）
+  - 观察“导航”工具栏按钮使能状态随历史变化（后退可用/不可用）
+- 预期：
+  - 历史入栈仅发生在正常导航成功后（启动默认广播或 Shift+新窗不入栈）
+  - 按钮状态与历史边界一致
+- 参考实现：[core/app.py](core/app.py)，[services/navigation_history_service.py](services/navigation_history_service.py)，[plugins/navigation_toolbar.py](plugins/navigation_toolbar.py)
+
+2) Shift+点击浮动Dock
+- 步骤：
+  - 在主编辑器 Shift+点击 [[Note B]]，应出现一个浮动 Dock（标题为“Note B”）
+  - 将浮动 Dock 拖入主界面右侧停靠区，再拖出为浮动
+- 预期：
+  - 新窗为 QDockWidget，非独立 QMainWindow
+  - 编辑、导航、补全在该窗保持正常
+- 参考实现：[core/app.py](core/app.py)（Shift+新窗处理路径）
+
+3) Dock 标题与重命名（UI→任务入队）
+- 步骤：
+  - 点击 [[Note A]] 后，Dock 标题为“Note A”
+  - 双击标题进入编辑，改为“Note A Renamed”并回车
+- 预期：
+  - 标题立即更新；后台任务队列入队 {"type":"rename_file", "src_path", "dest_path"}
+- 参考实现：[plugins/editable_editor/main.py](plugins/editable_editor/main.py)
+
+4) rename_file 全库同步
+- 步骤：
+  - 等待后台任务完成（观察日志），检查磁盘与索引变化
+  - 搜索全库所有 [[Note A]]、[[pages/Note A]] 等引用
+- 预期：
+  - 磁盘文件已重命名，Whoosh/SQLite 均更新
+  - 所有 [[旧名]]、[[旧名#anchor]]、[[旧名|别名]]、[[pages/旧名…]] 均替换为 [[新名…]]，尾部锚点/别名保留
+  - 所有变更文件已 upsert
+- 参考实现：[services/file_indexer_service.py](services/file_indexer_service.py)
+
+5) {{ 输入稳健性与自动保存
+- 步骤：
+  - 在空白笔记多次快速输入 {{、{{1、{{12、{{\n 等
+  - 停止输入约 800ms，验证自动保存（文件时间戳变化与 upsert 日志）
+- 预期：
+  - 文档绝不会被清空；补全/弹窗失效仅隐藏，不影响文档
+  - 自动保存仅在内容变化时写入，采用原子写；随后入队 upsert
+- 参考实现与测试：[plugins/editable_editor/main.py](plugins/editable_editor/main.py)，[tests/test_content_block_input.py](tests/test_content_block_input.py)
+
+6) 配置层防御：当前库不可移除
+- 步骤：
+  - 打开“库管理”，选择当前库，移除按钮应为禁用状态
+  - 若通过其他路径调用 remove_vault(current_vault)，应被拒绝并日志警告
+- 预期：
+  - UI 与配置层双重防御生效
+- 参考实现：[plugins/tool_launcher.py](plugins/tool_launcher.py)，[core/config_manager.py](core/config_manager.py)
+
+三、用户手动验收（UAT）
+1) 导航栏与历史
+- 打开 Note A → Note B → Another Note C
+- 连续点击“后退”：回到 Note B → 回到 Note A（按钮灰掉）
+- 点击“前进”：回到 Note B
+- 期望：按钮使能随历史边界自动变化
+
+2) Shift+点击浮动窗口
+- 在 Note A 中 Shift+点击 [[Note B]]，弹出浮动“Note B”
+- 将其拖入右侧停靠，再拖出为浮动
+- 在浮动窗口中输入文本，停顿 0.8s 后保存；切到主窗口再切回，内容仍在
+
+3) 标题与重命名
+- 点击 [[Note A]] 跳转；Dock 标题显示“Note A”
+- 双击标题改名为“Note A Renamed”，回车
+- 稍候在任意笔记内搜索 [[Note A]]，应自动变为 [[Note A Renamed]]（含锚点/别名尾部保持）
+
+4) {{ 稳定性与输入
+- 在空白或现有笔记快速输入 {{12、{{ 等
+- 文档任何情况下不被清空，补全/弹窗仅按需显示/隐藏
+
+5) 库管理
+- 添加、切换库；尝试移除当前库 → 应提示或禁用
+- 重建索引可用；切换库后默认 pages/ 与 assets/ 自动创建
+
+6) 工具栏排序与持久化
+- 拖动“后退/前进”按钮交换顺序
+- 重启应用后顺序保持
+- 修改 nav_history_maxlen 于配置并重启，历史长度按新值生效
+
+四、前置条件
+- 已选择有效库，存在 Note A.md、Note B.md、Another Note C.md
+- 建议先执行一次索引初扫，等待“Indexer is idle”日志（或短暂延迟）
+
+五、通过标准
+- 本章节 Dev/UAT 全部步骤按预期通过
+- 无库态安全：拦截导航/新窗并显示欢迎语
+- 稳定性：无崩溃；编辑器在自动保存/补全/浮动窗期间保持可交互
+
+六、回归与回滚
+- 若 rename_file 异常：确认 rename 失败时配置与索引一致性（必要时重建索引）
+- 若出现异常字符/路径冲突：应记录日志并拒绝提交；文档不损坏
+- 文档变更与版本号回滚：调整 [core/app.py](core/app.py) 的 VERSION 与本文档对应条目

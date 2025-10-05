@@ -3,7 +3,7 @@ import re
 import logging
 import sqlite3
 import hashlib
-from PySide6.QtWidgets import QPlainTextEdit, QWidget, QDockWidget, QCompleter, QTextEdit, QPushButton, QHBoxLayout
+from PySide6.QtWidgets import QPlainTextEdit, QWidget, QDockWidget, QCompleter, QTextEdit, QPushButton, QHBoxLayout, QLabel, QLineEdit, QToolButton, QStyle
 from pathlib import Path
 from PySide6.QtCore import Slot, Qt, QStringListModel, QTimer
 from PySide6.QtGui import QKeyEvent, QInputMethodEvent, QTextCursor, QTextCharFormat, QColor
@@ -11,6 +11,143 @@ from plugins.editor_plugin_interface import EditorPluginInterface
 from core.parsing_service import parse_markdown
 from core.signals import GlobalSignalBus
 
+
+class TitleBarWidget(QWidget):
+    def __init__(self, dock: QDockWidget, editor):
+        super().__init__(dock)
+        self.dock = dock
+        self.editor = editor
+
+        class _ClickableLabel(QLabel):
+            def __init__(self, owner):
+                super().__init__(owner)
+                self._owner = owner
+            def mouseDoubleClickEvent(self, event):
+                try:
+                    self._owner.enter_edit_mode()
+                except Exception:
+                    pass
+                try:
+                    super().mouseDoubleClickEvent(event)
+                except Exception:
+                    pass
+
+        class _RenameLineEdit(QLineEdit):
+            def __init__(self, owner):
+                super().__init__(owner)
+                self._owner = owner
+            def keyPressEvent(self, event: QKeyEvent):
+                try:
+                    if event.key() == Qt.Key_Escape:
+                        self._owner.exit_edit_mode(commit=False)
+                        event.accept()
+                        return
+                    if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                        self._owner.exit_edit_mode(commit=True)
+                        event.accept()
+                        return
+                except Exception:
+                    pass
+                try:
+                    super().keyPressEvent(event)
+                except Exception:
+                    pass
+            def focusOutEvent(self, event):
+                try:
+                    # Treat focus out as submit
+                    self._owner.exit_edit_mode(commit=True)
+                except Exception:
+                    pass
+                try:
+                    super().focusOutEvent(event)
+                except Exception:
+                    pass
+
+        self._label = _ClickableLabel(self)
+        self._label.setObjectName("evonoteDockTitle")
+        self._label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        self._edit = _RenameLineEdit(self)
+        self._edit.hide()
+        self._edit.returnPressed.connect(lambda: self.exit_edit_mode(commit=True))
+
+        self._btn_float = QToolButton(self)
+        self._btn_float.setAutoRaise(True)
+        self._btn_float.setToolTip("浮动/停靠")
+        self._btn_float.clicked.connect(self._on_float_clicked)
+
+        self._btn_close = QToolButton(self)
+        self._btn_close.setAutoRaise(True)
+        self._btn_close.setToolTip("关闭")
+        try:
+            self._btn_close.setIcon(self.style().standardIcon(QStyle.SP_TitleBarCloseButton))
+        except Exception:
+            pass
+        self._btn_close.clicked.connect(lambda: self.dock.close())
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 2, 8, 2)
+        lay.setSpacing(6)
+        lay.addWidget(self._label)
+        lay.addWidget(self._edit)
+        lay.addStretch(1)
+        lay.addWidget(self._btn_float)
+        lay.addWidget(self._btn_close)
+
+        self._refresh_float_icon()
+
+    def _refresh_float_icon(self):
+        try:
+            if self.dock.isFloating():
+                self._btn_float.setIcon(self.style().standardIcon(QStyle.SP_TitleBarNormalButton))
+            else:
+                self._btn_float.setIcon(self.style().standardIcon(QStyle.SP_TitleBarMaxButton))
+        except Exception:
+            pass
+
+    def _on_float_clicked(self):
+        try:
+            self.dock.setFloating(not self.dock.isFloating())
+            self._refresh_float_icon()
+        except Exception:
+            pass
+
+    def set_title(self, text: str):
+        try:
+            self._label.setText(text or "")
+        except Exception:
+            pass
+        try:
+            self._refresh_float_icon()
+        except Exception:
+            pass
+
+    def enter_edit_mode(self):
+        try:
+            self._edit.setText(self._label.text())
+            self._label.hide()
+            self._edit.show()
+            self._edit.setFocus()
+            self._edit.selectAll()
+        except Exception:
+            pass
+
+    def exit_edit_mode(self, commit: bool):
+        try:
+            if commit:
+                new_name = (self._edit.text() or "").strip()
+                try:
+                    self.editor._commit_rename(new_name)
+                except Exception:
+                    pass
+            self._edit.hide()
+            self._label.show()
+        except Exception:
+            try:
+                self._edit.hide()
+                self._label.show()
+            except Exception:
+                pass
 
 class ReactiveEditor(QPlainTextEdit):
     """
@@ -80,6 +217,17 @@ class ReactiveEditor(QPlainTextEdit):
         except Exception:
             pass
 
+        # E1: Initialize auto-save debounce timer
+        try:
+            self._autosave_timer = QTimer(self)
+            self._autosave_timer.setSingleShot(True)
+            self._autosave_timer.timeout.connect(self._perform_autosave)
+        except Exception:
+            # Timer init failure should not break editor
+            self._autosave_timer = None
+        self._autosave_interval_ms = 800
+        self._last_saved_hash = None
+
     def keyPressEvent(self, event: QKeyEvent):
         if self.completer.popup().isVisible():
             if event.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Tab, Qt.Key_Backtab):
@@ -91,6 +239,15 @@ class ReactiveEditor(QPlainTextEdit):
             self._capture_snapshot_pre_edit()
         except Exception:
             pass
+
+        # B3: F2 triggers dock title rename edit mode
+        if event.key() == Qt.Key_F2:
+            try:
+                self._begin_rename()
+            except Exception:
+                pass
+            event.accept()
+            return
 
         super().keyPressEvent(event)
         # Also trigger completion check from key event to be robust
@@ -161,12 +318,191 @@ class ReactiveEditor(QPlainTextEdit):
                 self._hide_block_overlay(reset_state=True)
             except Exception:
                 pass
+            try:
+                self._update_parent_dock_title(page_path)
+            except Exception:
+                pass
+            try:
+                self._ensure_titlebar_installed()
+            except Exception:
+                pass
+            # E1: Update autosave baseline hash after page load
+            try:
+                txt = self.toPlainText()
+                self._last_saved_hash = hashlib.sha256((txt or "").encode("utf-8")).hexdigest()
+            except Exception:
+                self._last_saved_hash = None
         except Exception as e:
             logging.warning(f"Failed to load page '{page_path}': {e}")
             try:
                 self.setPlainText("")
             except Exception:
                 pass
+
+    def _update_parent_dock_title(self, page_path: str) -> None:
+        try:
+            title = Path(page_path).stem if page_path else ""
+        except Exception:
+            title = str(page_path or "")
+        if not title:
+            return
+        try:
+            w = self
+            while w is not None:
+                if isinstance(w, QDockWidget):
+                    w.setWindowTitle(title)
+                    break
+                w = w.parentWidget()
+        except Exception:
+            pass
+
+    def _ensure_titlebar_installed(self) -> None:
+        try:
+            w = self
+            dock = None
+            while w is not None:
+                if isinstance(w, QDockWidget):
+                    dock = w
+                    break
+                w = w.parentWidget()
+            if dock is None:
+                return
+            tb = getattr(dock, "_ev_custom_titlebar", None)
+            if not isinstance(tb, TitleBarWidget):
+                tb = TitleBarWidget(dock, self)
+                try:
+                    dock.setTitleBarWidget(tb)
+                except Exception:
+                    pass
+                dock._ev_custom_titlebar = tb
+            try:
+                title = dock.windowTitle()
+            except Exception:
+                title = ""
+            if not title:
+                try:
+                    page_path = getattr(self, "current_file_path", "") or ""
+                    title = Path(page_path).stem
+                except Exception:
+                    title = ""
+            try:
+                tb.set_title(title)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _begin_rename(self) -> None:
+        try:
+            self._ensure_titlebar_installed()
+            w = self
+            dock = None
+            while w is not None:
+                if isinstance(w, QDockWidget):
+                    dock = w
+                    break
+                w = w.parentWidget()
+            if dock and hasattr(dock, "_ev_custom_titlebar"):
+                try:
+                    dock._ev_custom_titlebar.enter_edit_mode()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _commit_rename(self, new_name: str) -> bool:
+        """
+        Validate and enqueue a 'rename_file' task; optimistic UI update on success.
+        Returns True if enqueued, else False.
+        """
+        try:
+            old_rel = str(getattr(self, "current_file_path", "") or "").strip()
+            if not old_rel:
+                return False
+            try:
+                p_old = Path(old_rel)
+                old_stem = p_old.stem
+                old_dir = str(p_old.parent)
+            except Exception:
+                old_stem = Path(old_rel).stem
+                old_dir = str(Path(old_rel).parent)
+
+            new_name = (new_name or "").strip()
+            if not new_name or new_name == old_stem:
+                return False
+            if re.search(r'[\/\\:\*\?"<>|]', new_name):
+                return False
+            if len(new_name) > 255:
+                return False
+
+            if old_dir in ("", "."):
+                new_rel = f"{new_name}.md"
+            else:
+                new_rel = f"{old_dir.replace('\\', '/')}/{new_name}.md"
+
+            svc = getattr(getattr(self, "app_context", None), "file_indexer_service", None)
+            vault = getattr(svc, "vault_path", None)
+            if not vault:
+                logging.warning("rename_file: vault_path is missing; aborting and restoring UI")
+                try:
+                    self._update_parent_dock_title(old_rel)
+                    self._ensure_titlebar_installed()
+                except Exception:
+                    pass
+                return False
+
+            src_abs = Path(vault) / old_rel
+            dest_abs = Path(vault) / new_rel
+
+            queued = False
+            try:
+                if svc and hasattr(svc, "task_queue") and getattr(svc, "task_queue"):
+                    svc.task_queue.put({
+                        "type": "rename_file",
+                        "src_path": str(src_abs),
+                        "dest_path": str(dest_abs),
+                    })
+                    queued = True
+                else:
+                    logging.warning("rename_file: task_queue unavailable; aborting and restoring UI")
+            except Exception as e:
+                logging.warning(f"rename_file enqueue failed: {e}")
+                queued = False
+
+            if not queued:
+                try:
+                    self._update_parent_dock_title(old_rel)
+                    self._ensure_titlebar_installed()
+                except Exception:
+                    pass
+                return False
+
+            self.current_file_path = new_rel
+            try:
+                self._update_parent_dock_title(new_rel)
+            except Exception:
+                pass
+            try:
+                w = self
+                dock = None
+                while w is not None:
+                    if isinstance(w, QDockWidget):
+                        dock = w
+                        break
+                    w = w.parentWidget()
+                if dock and hasattr(dock, "_ev_custom_titlebar"):
+                    dock._ev_custom_titlebar.set_title(new_name)
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            logging.warning(f"_commit_rename error: {e}")
+            try:
+                self._update_parent_dock_title(getattr(self, "current_file_path", ""))
+                self._ensure_titlebar_installed()
+            except Exception:
+                pass
+            return False
 
     @Slot(bool, str)
     def on_vault_state_changed(self, has_vault: bool, vault_path: str):
@@ -188,6 +524,16 @@ class ReactiveEditor(QPlainTextEdit):
         except Exception:
             pass
         if not has_vault:
+            # E1: Stop autosave and clear baseline when vault disabled
+            try:
+                if hasattr(self, "_autosave_timer") and self._autosave_timer:
+                    self._autosave_timer.stop()
+            except Exception:
+                pass
+            try:
+                self._last_saved_hash = None
+            except Exception:
+                pass
             # Read-only and welcome banner
             try:
                 self.setReadOnly(True)
@@ -256,51 +602,119 @@ class ReactiveEditor(QPlainTextEdit):
         except Exception:
             pass
 
+        # E1: Debounced auto-save scheduling
+        try:
+            self._schedule_autosave()
+        except Exception:
+            pass
+
     def _check_for_completion_trigger(self):
         """Checks if the text around the cursor should trigger a completion."""
-        # ST-16: Disable completion when no active vault
-        if not getattr(self, "_completion_enabled", True):
+        try:
+            # ST-16: Disable completion when no active vault
+            if not getattr(self, "_completion_enabled", True):
+                try:
+                    self.completer.popup().hide()
+                except Exception:
+                    pass
+                self.last_completion_prefix = None
+                return
+
+            cursor = self.textCursor()
+            if cursor is None:
+                # No cursor available; hide UI and bail
+                try:
+                    self.completer.popup().hide()
+                except Exception:
+                    pass
+                self.last_completion_prefix = None
+                return
+
+            # Guard against invalid positionInBlock and block access
+            try:
+                block = cursor.block()
+                line_text = block.text() if block is not None else ""
+                pos_in_block = cursor.positionInBlock()
+                if not isinstance(pos_in_block, int):
+                    pos_in_block = 0
+                pos_in_block = max(0, min(pos_in_block, len(line_text)))
+                current_line_text = line_text[:pos_in_block]
+            except Exception:
+                current_line_text = ""
+
+            # FR-4.1: Detect page links `[[...` and content blocks `{{...`
+            page_link_match = re.search(r'\[\[([^\[\]]*)$', current_line_text)
+            content_block_match = re.search(r'\{\{([^\{\}]*)$', current_line_text)
+
+            # Determine which trigger is active, if any
+            active_match = None
+            completion_type = None
+            if page_link_match:
+                active_match = page_link_match
+                completion_type = 'page_link'
+            elif content_block_match:
+                active_match = content_block_match
+                completion_type = 'content_block'
+
+            if active_match and completion_type:
+                try:
+                    prefix = active_match.group(1) or ""
+                except Exception:
+                    prefix = ""
+
+                # Safety guards: never let odd inputs break the editor
+                if ("\n" in prefix) or (len(prefix) > 128):
+                    try:
+                        self.completer.popup().hide()
+                    except Exception:
+                        pass
+                    self.last_completion_prefix = None
+                    return
+
+                logging.info(f"Completion trigger activated: type='{completion_type}', prefix='{prefix}'")
+
+                # Emit search request if the prefix has changed
+                if prefix != self.last_completion_prefix:
+                    if prefix.strip():
+                        GlobalSignalBus.completion_requested.emit(completion_type, prefix)
+                    self.last_completion_prefix = prefix
+
+                try:
+                    self.completer.setCompletionPrefix(prefix)
+                except Exception:
+                    # If completer fails, just hide and continue
+                    try:
+                        self.completer.popup().hide()
+                    except Exception:
+                        pass
+                    self.last_completion_prefix = None
+                    return
+
+                self._update_popup_size()
+                try:
+                    self.completer.complete(self.cursorRect(cursor))
+                except Exception:
+                    # Popup failure should not affect document content
+                    try:
+                        self.completer.popup().hide()
+                    except Exception:
+                        pass
+            else:
+                # If no pattern matches, hide the popup
+                if self.completer.popup().isVisible():
+                    try:
+                        self.completer.popup().hide()
+                    except Exception:
+                        pass
+                self.last_completion_prefix = None
+        except Exception as e:
+            logging.warning(f"_check_for_completion_trigger guarded failure: {e}")
             try:
                 self.completer.popup().hide()
             except Exception:
                 pass
             self.last_completion_prefix = None
             return
-        cursor = self.textCursor()
-        current_line_text = cursor.block().text()[:cursor.positionInBlock()]
-        
-        # FR-4.1: Detect page links `[[...` and content blocks `{{...`
-        page_link_match = re.search(r'\[\[([^\]\[]*)$', current_line_text)
-        content_block_match = re.search(r'\{\{([^\{\}]*)$', current_line_text)
-
-        # Determine which trigger is active, if any
-        active_match = None
-        completion_type = None
-        if page_link_match:
-            active_match = page_link_match
-            completion_type = 'page_link'
-        elif content_block_match:
-            active_match = content_block_match
-            completion_type = 'content_block'
-
-        if active_match and completion_type:
-            prefix = active_match.group(1)
-            logging.info(f"Completion trigger activated: type='{completion_type}', prefix='{prefix}'")
-
-            # Emit search request if the prefix has changed
-            if prefix != self.last_completion_prefix:
-                if prefix.strip():
-                    GlobalSignalBus.completion_requested.emit(completion_type, prefix)
-                self.last_completion_prefix = prefix
-
-            self.completer.setCompletionPrefix(prefix)
-            self._update_popup_size()
-            self.completer.complete(self.cursorRect(cursor))
-        else:
-            # If no pattern matches, hide the popup
-            if self.completer.popup().isVisible():
-                self.completer.popup().hide()
-            self.last_completion_prefix = None
 
     def _update_popup_size(self, strings=None):
         """Adjust the completer popup width based on content."""
@@ -707,6 +1121,96 @@ class ReactiveEditor(QPlainTextEdit):
                 event.accept()
                 return
         super().mousePressEvent(event)
+
+    # --- E1: Auto-save debounce and atomic write ---
+    def _schedule_autosave(self):
+        try:
+            if not getattr(self, "_has_active_vault", False):
+                return
+            rel = (getattr(self, "current_file_path", "") or "").strip()
+            if not rel:
+                return
+            t = getattr(self, "_autosave_timer", None)
+            if not t:
+                return
+            try:
+                t.stop()
+            except Exception:
+                pass
+            try:
+                interval = int(getattr(self, "_autosave_interval_ms", 800) or 800)
+            except Exception:
+                interval = 800
+            try:
+                t.start(interval)
+            except Exception:
+                pass
+        except Exception as e:
+            logging.warning(f"_schedule_autosave guarded failure: {e}")
+
+    def _perform_autosave(self):
+        try:
+            if not getattr(self, "_has_active_vault", False):
+                return
+            rel = (getattr(self, "current_file_path", "") or "").strip()
+            if not rel:
+                return
+
+            svc = getattr(getattr(self, "app_context", None), "file_indexer_service", None)
+            vault = getattr(svc, "vault_path", None)
+            if not vault:
+                return
+            try:
+                base = Path(vault)
+            except Exception:
+                base = Path(str(vault))
+            abs_path = base / rel
+
+            # Ensure directory exists
+            try:
+                abs_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+            txt = self.toPlainText()
+            try:
+                new_hash = hashlib.sha256((txt or "").encode("utf-8")).hexdigest()
+            except Exception:
+                new_hash = None
+
+            if new_hash and new_hash == getattr(self, "_last_saved_hash", None):
+                return
+
+            wrote = False
+            try:
+                if svc and hasattr(svc, "_atomic_write"):
+                    svc._atomic_write(abs_path, txt)
+                    wrote = True
+            except Exception as e:
+                logging.warning(f"autosave atomic_write failed: {e}")
+                wrote = False
+
+            if not wrote:
+                try:
+                    with open(abs_path, "w", encoding="utf-8", newline="") as f:
+                        f.write(txt)
+                    wrote = True
+                except Exception as e:
+                    logging.warning(f"autosave fallback write failed for {abs_path}: {e}")
+                    wrote = False
+
+            if wrote:
+                try:
+                    self._last_saved_hash = new_hash
+                except Exception:
+                    pass
+                try:
+                    if svc and hasattr(svc, "task_queue") and getattr(svc, "task_queue"):
+                        svc.task_queue.put({"type": "upsert", "path": str(abs_path)})
+                except Exception as e:
+                    logging.warning(f"autosave enqueue upsert failed: {e}")
+        except Exception as e:
+            logging.warning(f"_perform_autosave guarded failure: {e}")
 
 class EditableEditorPlugin(EditorPluginInterface):
     def __init__(self, app):

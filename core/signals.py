@@ -44,6 +44,27 @@ class _GlobalSignalBus(QObject):
         page_title (str): The target page title or path to open in a new window.
     """
 
+    # ---- Navigation History (V0.4.5b) ----
+    back_navigation_requested = Signal()
+    """
+    当用户点击后退时由导航工具栏发出。无参数。
+    """
+
+    forward_navigation_requested = Signal()
+    """
+    当用户点击前进时由导航工具栏发出。无参数。
+    """
+
+    nav_history_state_changed = Signal(bool, bool, str)
+    """
+    由导航历史服务广播当前历史可用性与当前页面。
+
+    Args:
+        can_back (bool): 是否可后退
+        can_forward (bool): 是否可前进
+        current_page (str): 当前页面的相对路径且包含扩展名，如 'Note A.md'；无当前页面时传空字符串
+    """
+
     # ---- Backlink Panel (new for V0.4.2b) ----
     active_page_changed = Signal(str)
     """

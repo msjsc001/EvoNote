@@ -1,3 +1,4 @@
+from __future__ import annotations
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "vaults": [],
     "current_vault": None,
     "flags": {"cleaned_program_dir_v0_4_5a": False},
+    "ui": {"toolbar_actions": ["back", "forward"], "nav_history_maxlen": 50},
 }
 
 WHITELIST_MD = {
@@ -76,7 +78,9 @@ def _dedupe_keep_order(items: List[str]) -> List[str]:
 
 
 def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure required keys/types exist; coerce values and de-duplicate vaults."""
+    """Ensure required keys/types exist; coerce values and de-duplicate vaults.
+    Also normalize UI settings (A5): toolbar_actions and nav_history_maxlen.
+    """
     out: Dict[str, Any] = {}
     out["version"] = str(cfg.get("version") or VERSION_STR)
     # vaults
@@ -98,6 +102,32 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     flags = cfg.get("flags") if isinstance(cfg.get("flags"), dict) else {}
     cleaned = bool(flags.get("cleaned_program_dir_v0_4_5a", False))
     out["flags"] = {"cleaned_program_dir_v0_4_5a": cleaned}
+    # ui
+    try:
+        ui_in = cfg.get("ui") if isinstance(cfg.get("ui"), dict) else {}
+    except Exception:
+        ui_in = {}
+    # toolbar_actions: list[str] subset of {"back","forward"}, dedupe keep order, fallback default
+    ta = ui_in.get("toolbar_actions")
+    norm_ta: List[str] = []
+    if isinstance(ta, list):
+        for it in ta:
+            if isinstance(it, str):
+                s = it.strip()
+                if s in {"back", "forward"} and s not in norm_ta:
+                    norm_ta.append(s)
+    norm_ta = _dedupe_keep_order(norm_ta)
+    if not norm_ta:
+        norm_ta = ["back", "forward"]
+    # nav_history_maxlen: int >= 1 else default 50
+    n = ui_in.get("nav_history_maxlen")
+    try:
+        n_int = int(n) if n is not None else 50
+    except Exception:
+        n_int = 50
+    if n_int < 1:
+        n_int = 50
+    out["ui"] = {"toolbar_actions": norm_ta, "nav_history_maxlen": n_int}
     return out
 
 
@@ -166,14 +196,25 @@ def add_vault(cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
 
 
 def remove_vault(cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
-    """Remove a vault path from config; if it was current_vault, clear it."""
+    """Remove a vault path from config.
+
+    Defensive rule (D1): If the target is the current_vault, refuse removal and return config unchanged.
+    Callers should switch_vault first, then remove.
+    """
     if not isinstance(cfg, dict):
         cfg = _normalize_config(DEFAULT_CONFIG.copy())
     norm = _normalize_config(cfg)
     p = _canonicalize_path(path)
-    norm["vaults"] = [v for v in norm.get("vaults", []) if v != p]
+
+    # Do not allow removing the currently active vault at config layer
     if norm.get("current_vault") == p:
-        norm["current_vault"] = None
+        try:
+            logging.warning("remove_vault: refused to remove current_vault from config; switch to another vault first.")
+        except Exception:
+            pass
+        return norm
+
+    norm["vaults"] = [v for v in norm.get("vaults", []) if v != p]
     return norm
 
 
@@ -259,3 +300,139 @@ def perform_one_time_cleanup_if_needed(cfg: Dict[str, Any], app_dir: Path) -> Di
     # Set flag to prevent re-execution even if partial
     norm["flags"]["cleaned_program_dir_v0_4_5a"] = True
     return norm
+# -------- UI Settings Helpers (A5) --------
+def get_ui_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    返回规范化后的 UI 配置子集：{"toolbar_actions": [...], "nav_history_maxlen": int}
+    - toolbar_actions 仅允许 {"back","forward"}，去重保序；非法或空时回退默认 ["back","forward"]
+    - nav_history_maxlen 需为 int 且 &gt;= 1；非法时回退默认 50
+    所有异常吞掉并返回默认。
+    """
+    try:
+        n = _normalize_config(cfg if isinstance(cfg, dict) else DEFAULT_CONFIG.copy())
+        ui = n.get("ui", {})
+        actions = ui.get("toolbar_actions")
+        maxlen = ui.get("nav_history_maxlen")
+        # normalize actions
+        norm_actions: List[str] = []
+        if isinstance(actions, list):
+            for it in actions:
+                if isinstance(it, str):
+                    s = it.strip()
+                    if s in {"back", "forward"} and s not in norm_actions:
+                        norm_actions.append(s)
+        if not norm_actions:
+            norm_actions = ["back", "forward"]
+        # normalize maxlen
+        try:
+            maxlen_int = int(maxlen) if maxlen is not None else 50
+        except Exception:
+            maxlen_int = 50
+        if maxlen_int < 1:
+            maxlen_int = 50
+        return {"toolbar_actions": norm_actions, "nav_history_maxlen": maxlen_int}
+    except Exception:
+        return {"toolbar_actions": ["back", "forward"], "nav_history_maxlen": 50}
+
+
+def set_ui_settings(cfg: Dict[str, Any], ui_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    设置 UI 配置子集；对传入值做规范化。未提供的键保持不变。
+    - toolbar_actions: 仅允许 {"back","forward"}，去重保序；若传入非法或空则回退默认 ["back","forward"]
+    - nav_history_maxlen: int 且 &gt;=1；若非法则回退默认 50
+    返回新的 cfg（未写盘）。
+    """
+    if not isinstance(cfg, dict):
+        cfg = DEFAULT_CONFIG.copy()
+    norm = _normalize_config(cfg)
+    try:
+        src = ui_dict if isinstance(ui_dict, dict) else {}
+
+        # toolbar_actions
+        if "toolbar_actions" in src:
+            ta = src.get("toolbar_actions")
+            norm_ta: List[str] = []
+            if isinstance(ta, list):
+                for it in ta:
+                    if isinstance(it, str):
+                        s = it.strip()
+                        if s in {"back", "forward"} and s not in norm_ta:
+                            norm_ta.append(s)
+            if not norm_ta:
+                norm_ta = ["back", "forward"]
+            norm.setdefault("ui", {})["toolbar_actions"] = _dedupe_keep_order(norm_ta)
+
+        # nav_history_maxlen
+        if "nav_history_maxlen" in src:
+            mx = src.get("nav_history_maxlen")
+            try:
+                mx_int = int(mx)
+            except Exception:
+                mx_int = 50
+            if mx_int < 1:
+                mx_int = 50
+            norm.setdefault("ui", {})["nav_history_maxlen"] = mx_int
+    except Exception:
+        pass
+    return _normalize_config(norm)
+
+
+def get_toolbar_actions(cfg: Dict[str, Any]) -> List[str]:
+    """
+    读取并返回 toolbar_actions；异常回退默认。
+    """
+    try:
+        return list(get_ui_settings(cfg).get("toolbar_actions", ["back", "forward"]))
+    except Exception:
+        return ["back", "forward"]
+
+
+def set_toolbar_actions(cfg: Dict[str, Any], actions: List[str]) -> Dict[str, Any]:
+    """
+    设置工具栏按钮顺序，值集限定在 {"back","forward"}；非法或空时回退默认。
+    返回新的 cfg（未写盘）。
+    """
+    if not isinstance(cfg, dict):
+        cfg = DEFAULT_CONFIG.copy()
+    norm = _normalize_config(cfg)
+    norm_ta: List[str] = []
+    try:
+        for it in (actions or []):
+            if isinstance(it, str):
+                s = it.strip()
+                if s in {"back", "forward"} and s not in norm_ta:
+                    norm_ta.append(s)
+    except Exception:
+        norm_ta = []
+    if not norm_ta:
+        norm_ta = ["back", "forward"]
+    norm.setdefault("ui", {})["toolbar_actions"] = _dedupe_keep_order(norm_ta)
+    return _normalize_config(norm)
+
+
+def get_nav_history_maxlen(cfg: Dict[str, Any]) -> int:
+    """
+    读取 nav_history_maxlen；异常回退默认 50。
+    """
+    try:
+        return int(get_ui_settings(cfg).get("nav_history_maxlen", 50))
+    except Exception:
+        return 50
+
+
+def set_nav_history_maxlen(cfg: Dict[str, Any], n: int) -> Dict[str, Any]:
+    """
+    设置 nav_history_maxlen (int, &gt;=1)，非法时回退默认 50。
+    返回新的 cfg（未写盘）。
+    """
+    if not isinstance(cfg, dict):
+        cfg = DEFAULT_CONFIG.copy()
+    norm = _normalize_config(cfg)
+    try:
+        v = int(n)
+    except Exception:
+        v = 50
+    if v < 1:
+        v = 50
+    norm.setdefault("ui", {})["nav_history_maxlen"] = v
+    return _normalize_config(norm)
