@@ -32,8 +32,10 @@ class BacklinkPanelPlugin(QObject):
         self.current_page_path: str | None = None
 
         # Connect global signals
-        GlobalSignalBus.active_page_changed.connect(self.on_active_page_changed)
+        GlobalSignalBus.active_page_changed.connect(self.on_active_page_changed) # Keep for compatibility
+        GlobalSignalBus.panel_context_changed.connect(self.on_active_page_changed) # New: for panel context
         GlobalSignalBus.backlink_results_ready.connect(self.on_backlink_results_ready)
+        self._last_requested_page = None # For debouncing duplicate requests
 
     def get_widget(self) -> QDockWidget:
         """
@@ -55,7 +57,11 @@ class BacklinkPanelPlugin(QObject):
         - Clear the current list
         - Request backlinks asynchronously via the global signal
         """
+        if page_path == self._last_requested_page:
+            return # Debounce duplicate requests
+
         self.current_page_path = page_path
+        self._last_requested_page = page_path
         if self.list_widget is not None:
             self.list_widget.clear()
         # Immediately request backlink query

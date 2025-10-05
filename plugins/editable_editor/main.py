@@ -1,6 +1,7 @@
 # plugins/editable_editor/main.py
 import re
 import logging
+import os
 import sqlite3
 import hashlib
 from PySide6.QtWidgets import QPlainTextEdit, QWidget, QDockWidget, QCompleter, QTextEdit, QPushButton, QHBoxLayout, QLabel, QLineEdit, QToolButton, QStyle
@@ -178,6 +179,9 @@ class ReactiveEditor(QPlainTextEdit):
         # ST-16: initial editor flags (will be updated via vault_state_changed or plugin injection)
         self._has_active_vault = True
         self._completion_enabled = True
+        # V0.4.6: Editor scope flags
+        self._follow_global_active_page = True # If False, this editor ignores GlobalSignalBus.active_page_changed
+        self._handle_navigation_locally = False # If True, [[links]] are handled locally, not via GlobalSignalBus.page_navigation_requested
         # Current active file path for this editor instance (relative, with extension)
         # FR-2: Used to broadcast active page on focus.
         self.current_file_path = "Note A.md"
@@ -202,7 +206,7 @@ class ReactiveEditor(QPlainTextEdit):
         self._db_path = getattr(self, "_db_path", None)
         self._active_block = None  # {'start': int, 'end': int, 'original_content': str, 'original_hash': str}
         self._block_overlay = None
-        self._block_debounce_ms = 250
+        self._block_debounce_ms = 180
         self._block_timer = QTimer(self)
         self._block_timer.setSingleShot(True)
         self._block_timer.timeout.connect(self._on_block_debounce_timeout)
@@ -250,6 +254,19 @@ class ReactiveEditor(QPlainTextEdit):
             return
 
         super().keyPressEvent(event)
+        # Immediately hide completion when typing a closing brace '}}'
+        try:
+            if event.text() == "}":
+                c = self.textCursor()
+                pos = c.position()
+                txt = self.toPlainText()
+                if pos >= 2 and txt[pos-2:pos] == "}}":
+                    try:
+                        self.completer.popup().hide()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         # Also trigger completion check from key event to be robust
         self._check_for_completion_trigger()
         # Schedule block change detection debounce (P2-03)
@@ -260,11 +277,12 @@ class ReactiveEditor(QPlainTextEdit):
 
     def inputMethodEvent(self, event: QInputMethodEvent):
         """Ensure IME composition/commit also triggers snapshot and completion checks (ST-08)."""
-        super().inputMethodEvent(event)
+        # Capture snapshot before the IME commits text
         try:
             self._capture_snapshot_pre_edit()
         except Exception:
             pass
+        super().inputMethodEvent(event)
         self._check_for_completion_trigger()
         try:
             self._schedule_block_check()
@@ -272,14 +290,19 @@ class ReactiveEditor(QPlainTextEdit):
             pass
 
     def focusOutEvent(self, event):
-        """Hide completion popup and overlay on focus loss without accepting edits (ST-08)."""
+        """On focus loss: hide completion popup, and if {{...}} was modified, default to '转为新块'."""
         self.completer.popup().hide()
         try:
             if getattr(self, "_block_overlay", None) and self._block_overlay.isVisible():
-                # Only hide overlay; do not accept as '新块'
-                self._hide_block_overlay(reset_state=False)
+                if getattr(self, "_block_dirty", False):
+                    self._on_overlay_new_block_clicked()
+                else:
+                    self._hide_block_overlay(reset_state=False)
         except Exception:
-            pass
+            try:
+                self._hide_block_overlay(reset_state=False)
+            except Exception:
+                pass
         super().focusOutEvent(event)
 
     def focusInEvent(self, event):
@@ -288,17 +311,28 @@ class ReactiveEditor(QPlainTextEdit):
         # ST-16: Suppress broadcast when no active vault
         if not getattr(self, "_has_active_vault", True):
             return
+        # V0.4.6: Only broadcast panel context, not active_page_changed, to avoid global editor sync
         try:
             page_path = getattr(self, "current_file_path", "Note A.md")
         except Exception:
             page_path = "Note A.md"
-        GlobalSignalBus.active_page_changed.emit(page_path)
+        GlobalSignalBus.panel_context_changed.emit(page_path)
 
     @Slot(str)
     def on_active_page_changed(self, page_path: str):
         """
         ST-05: Load file content when the active page changes.
         Expects page_path to be vault-relative and include '.md'.
+        V0.4.6: Only loads if _follow_global_active_page is True.
+        """
+        if not getattr(self, "_follow_global_active_page", True):
+            return
+        self._load_page_for_self(page_path)
+
+    def _load_page_for_self(self, page_path: str):
+        """
+        V0.4.6: Internal method to load a page into this editor instance,
+        without considering global active page following.
         """
         try:
             svc = getattr(getattr(self, "app_context", None), "file_indexer_service", None)
@@ -333,7 +367,7 @@ class ReactiveEditor(QPlainTextEdit):
             except Exception:
                 self._last_saved_hash = None
         except Exception as e:
-            logging.warning(f"Failed to load page '{page_path}': {e}")
+            logging.warning(f"Failed to load page '{page_path}' for self: {e}")
             try:
                 self.setPlainText("")
             except Exception:
@@ -588,11 +622,6 @@ class ReactiveEditor(QPlainTextEdit):
         current_line_text = cursor.block().text()[:cursor.positionInBlock()]
         logging.info(f"contentsChanged; current_line_text='{current_line_text}'")
         
-        # ST-08: ensure snapshot capture for IME/content-changed path
-        try:
-            self._capture_snapshot_pre_edit()
-        except Exception:
-            pass
 
         self._check_for_completion_trigger()
 
@@ -642,19 +671,24 @@ class ReactiveEditor(QPlainTextEdit):
             except Exception:
                 current_line_text = ""
 
-            # FR-4.1: Detect page links `[[...` and content blocks `{{...`
+            # Detect both triggers and choose the one closest to caret
             page_link_match = re.search(r'\[\[([^\[\]]*)$', current_line_text)
             content_block_match = re.search(r'\{\{([^\{\}]*)$', current_line_text)
 
-            # Determine which trigger is active, if any
             active_match = None
             completion_type = None
-            if page_link_match:
-                active_match = page_link_match
-                completion_type = 'page_link'
-            elif content_block_match:
-                active_match = content_block_match
-                completion_type = 'content_block'
+            if page_link_match or content_block_match:
+                idx_page = page_link_match.start(0) if page_link_match else -1
+                idx_block = content_block_match.start(0) if content_block_match else -1
+                if idx_block > idx_page:
+                    active_match = content_block_match
+                    completion_type = 'content_block'
+                elif idx_page > idx_block:
+                    active_match = page_link_match
+                    completion_type = 'page_link'
+                else:
+                    active_match = None
+                    completion_type = None
 
             if active_match and completion_type:
                 try:
@@ -662,7 +696,7 @@ class ReactiveEditor(QPlainTextEdit):
                 except Exception:
                     prefix = ""
 
-                # Safety guards: never let odd inputs break the editor
+                # Safety guards
                 if ("\n" in prefix) or (len(prefix) > 128):
                     try:
                         self.completer.popup().hide()
@@ -748,10 +782,16 @@ class ReactiveEditor(QPlainTextEdit):
             self.completion_model.setStringList(results)
             logging.info(f"Completion model for '{completion_type}' updated with {self.completion_model.rowCount()} items.")
             self._update_popup_size(results)
-            # Re-trigger the completer to ensure it shows with the new data
+            # Re-check trigger state before showing results to avoid flicker after closing braces
+            self._check_for_completion_trigger()
             if self.last_completion_prefix is not None:
-                 self.completer.complete(self.cursorRect(self.textCursor()))
-            self._check_for_completion_trigger() # Keep state in sync
+                try:
+                    self.completer.complete(self.cursorRect(self.textCursor()))
+                except Exception:
+                    try:
+                        self.completer.popup().hide()
+                    except Exception:
+                        pass
     
     @Slot(str)
     def insert_completion(self, completion_text):
@@ -800,8 +840,8 @@ class ReactiveEditor(QPlainTextEdit):
             self._hide_block_overlay(reset_state=False)
             return
         start, end, content = span
-        # If we already track this exact block span, do not overwrite snapshot
-        if self._active_block and self._active_block.get("start") == start and self._active_block.get("end") == end:
+        # If we are still in the same block (identified by start), do not overwrite the original snapshot
+        if self._active_block and self._active_block.get("start") == start:
             return
         self._active_block = {
             "start": start,
@@ -821,7 +861,14 @@ class ReactiveEditor(QPlainTextEdit):
         pos = self.textCursor().position()
         span = self._find_block_span_at_pos(pos, text)
         if not span:
-            self._hide_block_overlay(reset_state=True)
+            # Leaving the block; if modified, default to '转为新块'
+            if getattr(self, "_block_dirty", False):
+                try:
+                    self._on_overlay_new_block_clicked()
+                except Exception:
+                    self._hide_block_overlay(reset_state=True)
+            else:
+                self._hide_block_overlay(reset_state=True)
             return
         _, _, current_content = span
         if current_content != self._active_block.get("original_content", ""):
@@ -850,30 +897,77 @@ class ReactiveEditor(QPlainTextEdit):
         return None
 
     def _on_block_debounce_timeout(self):
-        """After debounce, if block modified and refcount>1, show overlay (P2-03, P2-04, P2-05)."""
+        """After debounce, if block modified show overlay. '全局更新' is enabled only when meaningful."""
         if not self._active_block:
             return
         current = self._get_current_block_content_and_span()
         if not current:
-            self._hide_block_overlay(reset_state=True)
+            # caret moved away; if there is a pending modification, default to '转为新块'
+            if getattr(self, "_block_dirty", False):
+                try:
+                    self._on_overlay_new_block_clicked()
+                except Exception:
+                    pass
+            else:
+                self._hide_block_overlay(reset_state=True)
             return
         _, _, current_content = current
         if current_content == self._active_block.get("original_content", ""):
+            # no change
+            try:
+                self._block_dirty = False
+            except Exception:
+                pass
             self._hide_block_overlay(reset_state=False)
             return
 
-        # Query ref count
+        # Mark dirty and decide whether '全局更新' is meaningful
+        try:
+            self._block_dirty = True
+        except Exception:
+            pass
+
         old_hash = self._active_block.get("original_hash")
         refcount = 0
         try:
             refcount = self._query_block_reference_count(old_hash)
         except Exception as e:
             logging.warning(f"Refcount query failed: {e}")
-        if refcount > 1:
-            self._show_block_overlay()
-        else:
-            # No need to bother user for singly-referenced blocks
-            self._hide_block_overlay(reset_state=False)
+
+        exists_elsewhere = False
+        # Check if new content already exists as another block in DB
+        try:
+            if getattr(self, "_db_path", None):
+                conn = sqlite3.connect(self._db_path)
+                cur = conn.cursor()
+                cur.execute("SELECT 1 FROM blocks WHERE content = ? LIMIT 1", (current_content,))
+                exists_elsewhere = cur.fetchone() is not None
+                conn.close()
+        except Exception as e:
+            logging.warning(f"Block existence query failed: {e}")
+            exists_elsewhere = False
+
+        # '全局更新' allowed only when referenced in more than one file and new content is not already an existing block
+        try:
+            self._sync_allowed = (refcount > 1) and (not exists_elsewhere)
+        except Exception:
+            self._sync_allowed = (refcount > 1) and (not exists_elsewhere)
+
+        # Show overlay and update buttons
+        self._show_block_overlay()
+        try:
+            if getattr(self, "_btn_sync", None):
+                self._btn_sync.setEnabled(bool(self._sync_allowed))
+                if not self._sync_allowed:
+                    tip = "此修改不需要全局更新（引用过少或新内容已存在）。"
+                else:
+                    tip = "将把所有引用此块的文件同步为当前内容。"
+                try:
+                    self._btn_sync.setToolTip(tip)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _query_block_reference_count(self, block_hash: str) -> int:
         """Return COUNT(DISTINCT file_path) from block_instances (P2-04)."""
@@ -916,6 +1010,17 @@ class ReactiveEditor(QPlainTextEdit):
             btn_sync.clicked.connect(self._on_overlay_sync_clicked)
 
             self._block_overlay = w
+            # keep button refs for state updates
+            self._btn_sync = btn_sync
+            self._btn_new = btn_new
+            self._btn_cancel = btn_cancel
+
+        # Update '全局更新' enabled state every time we show it
+        try:
+            if getattr(self, "_btn_sync", None) is not None:
+                self._btn_sync.setEnabled(bool(getattr(self, "_sync_allowed", False)))
+        except Exception:
+            pass
 
         self._block_overlay.show()
         self._reposition_overlay()
@@ -955,6 +1060,10 @@ class ReactiveEditor(QPlainTextEdit):
             pass
         if reset_state:
             self._active_block = None
+            try:
+                self._block_dirty = False
+            except Exception:
+                pass
 
     def _replace_current_block_text(self, new_content: str):
         """Replace the current block's content with new_content (without braces management outside)."""
@@ -981,14 +1090,28 @@ class ReactiveEditor(QPlainTextEdit):
         except Exception as e:
             logging.warning(f"Cancel revert failed: {e}")
         self._hide_block_overlay(reset_state=True)
+        # Persist the revert immediately
+        try:
+            self._perform_autosave()
+        except Exception:
+            pass
 
     def _on_overlay_new_block_clicked(self):
         """[转为新块]: accept current edits and hide overlay (P2-07, default safe behavior)."""
         self._hide_block_overlay(reset_state=True)
+        # Persist accepted edits
+        try:
+            self._perform_autosave()
+        except Exception:
+            pass
 
     def _on_overlay_sync_clicked(self):
         """[全局更新]: enqueue 'sync_block' task with old_hash and new_content (P2-08)."""
         try:
+            # Safety: if not allowed, ignore click gracefully
+            if not bool(getattr(self, "_sync_allowed", False)):
+                self._hide_block_overlay(reset_state=True)
+                return
             current = self._get_current_block_content_and_span()
             if not current or not self._active_block:
                 self._hide_block_overlay(reset_state=True)
@@ -1002,6 +1125,11 @@ class ReactiveEditor(QPlainTextEdit):
         except Exception as e:
             logging.warning(f"Failed to enqueue sync_block: {e}")
         self._hide_block_overlay(reset_state=True)
+        # Persist local file after enqueuing sync
+        try:
+            self._perform_autosave()
+        except Exception:
+            pass
 
     # --- Live Semantic Rendering for [[Page Links]] ---
     def _schedule_render_update(self):
@@ -1072,6 +1200,71 @@ class ReactiveEditor(QPlainTextEdit):
             self.viewport().setCursor(Qt.IBeamCursor)
         super().mouseMoveEvent(event)
 
+    def _resolve_and_ensure_page_local(self, path_or_title: str) -> tuple[str, str]:
+        """
+        V0.4.6: Local version of _resolve_and_ensure_page, for internal editor use.
+        Avoids circular dependency on EvoNoteApp.
+        """
+        # Base vault path
+        base = getattr(getattr(self, "app_context", None), "file_indexer_service", None)
+        base = getattr(base, "vault_path", Path("."))
+        if not isinstance(base, Path):
+            base = Path(str(base or "."))
+
+        txt = str(path_or_title or "").strip()
+        if not txt:
+            txt = "Untitled"
+
+        p = Path(txt)
+        has_ext = p.suffix.lower() == ".md"
+        first_seg = (p.parts[0].lower() if p.parts else "")
+
+        if has_ext or first_seg == "pages":
+            if not has_ext:
+                p = p.with_suffix(".md")
+        else:
+            p = Path("pages") / p
+            if p.suffix.lower() != ".md":
+                p = p.with_suffix(".md")
+
+        abs_path = (base / p).resolve(strict=False)
+
+        try:
+            rel_path = abs_path.relative_to(base)
+        except Exception:
+            rel_path = Path(os.path.relpath(str(abs_path), start=str(base)))
+        rel_str = rel_path.as_posix()
+
+        if not abs_path.exists():
+            try:
+                abs_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(abs_path, "w", encoding="utf-8", newline="") as f:
+                    f.write("")
+                logging.info(f"INFO: Created new page at {abs_path}")
+            except Exception as e:
+                raise RuntimeError(f"Failed to create page file: {abs_path} ({e})")
+
+        return str(abs_path), rel_str
+
+    def _navigate_locally_to(self, page_title: str):
+        """
+        V0.4.6: Handle navigation within this editor instance only.
+        """
+        try:
+            abs_path, rel_path = self._resolve_and_ensure_page_local(page_title)
+            # Enqueue index update to reflect potential creation/update
+            try:
+                svc = getattr(getattr(self, "app_context", None), "file_indexer_service", None)
+                if svc and hasattr(svc, "task_queue"):
+                    svc.task_queue.put({"type": "upsert", "path": str(abs_path)})
+            except Exception as e:
+                logging.warning(f"WARNING: Failed to enqueue upsert for {abs_path}: {e}")
+            
+            self._load_page_for_self(rel_path)
+            GlobalSignalBus.panel_context_changed.emit(rel_path) # Update panels
+        except Exception as e:
+            logging.warning(f"ERROR: Local navigation failed for '{page_title}': {e}")
+
     def mousePressEvent(self, event):
         """Click handling: default to '新块' if clicking elsewhere while overlay visible; navigate on [[link]] click."""
         # ST-16: Block all interactions when no active vault
@@ -1116,6 +1309,8 @@ class ReactiveEditor(QPlainTextEdit):
                     mods = Qt.NoModifier
                 if mods & Qt.ShiftModifier:
                     GlobalSignalBus.page_open_requested.emit(hit["title"])
+                elif getattr(self, "_handle_navigation_locally", False): # V0.4.6: Local navigation
+                    self._navigate_locally_to(hit["title"])
                 else:
                     GlobalSignalBus.page_navigation_requested.emit(hit["title"])
                 event.accept()
@@ -1125,6 +1320,12 @@ class ReactiveEditor(QPlainTextEdit):
     # --- E1: Auto-save debounce and atomic write ---
     def _schedule_autosave(self):
         try:
+            # Gate scheduling while there is a pending block edit/overlay
+            try:
+                if getattr(self, "_block_dirty", False) or (getattr(self, "_block_overlay", None) and self._block_overlay.isVisible()):
+                    return
+            except Exception:
+                pass
             if not getattr(self, "_has_active_vault", False):
                 return
             rel = (getattr(self, "current_file_path", "") or "").strip()
@@ -1150,6 +1351,12 @@ class ReactiveEditor(QPlainTextEdit):
 
     def _perform_autosave(self):
         try:
+            # Gate autosave during pending block edits/overlay
+            try:
+                if getattr(self, "_block_dirty", False) or (getattr(self, "_block_overlay", None) and self._block_overlay.isVisible()):
+                    return
+            except Exception:
+                pass
             if not getattr(self, "_has_active_vault", False):
                 return
             rel = (getattr(self, "current_file_path", "") or "").strip()

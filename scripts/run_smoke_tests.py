@@ -1,9 +1,10 @@
 import os
 import sys
 import traceback
+from pathlib import Path
 
 """
-EvoNote V0.4.5b Smoke Test Runner
+EvoNote V0.4.6 Smoke Test Runner
 
 Purpose:
 - Headless run of critical tests without interactive UI.
@@ -28,6 +29,19 @@ def _set_headless_env():
     except Exception as e:
         print("[SMOKE][WARN] failed to set headless env:", e)
 
+def _ensure_project_root_on_sys_path():
+    """
+    Ensure project root is on sys.path so 'scripts.st02_selftest' can be imported
+    even when this runner is executed from the scripts/ directory.
+    """
+    try:
+        here = Path(__file__).resolve()
+        root = here.parent.parent
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+    except Exception as e:
+        print("[SMOKE][WARN] cannot ensure project root on sys.path:", e)
+
 
 def run_pytest_unit() -> bool:
     try:
@@ -48,12 +62,16 @@ def run_pytest_unit() -> bool:
 
 
 def run_st02_selftest() -> bool:
+    _ensure_project_root_on_sys_path()
     try:
         from scripts.st02_selftest import run as st_run
-    except Exception as e:
-        print("[SMOKE][FAIL] cannot import scripts.st02_selftest:", e)
-        traceback.print_exc()
-        return False
+    except Exception as e1:
+        try:
+            from st02_selftest import run as st_run
+        except Exception as e2:
+            print("[SMOKE][FAIL] cannot import st02_selftest:", e1, e2)
+            traceback.print_exc()
+            return False
     try:
         print("[SMOKE] Running ST-02 self-test...")
         st_run()

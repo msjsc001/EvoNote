@@ -128,21 +128,35 @@ class CompletionWorker(QObject):
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            # FTS5 query: match prefixes. The '*' is what makes it a prefix search.
-            # Using MATCH instead of LIKE for performance, as requested.
-            # We'll try FTS5 first, and fall back to LIKE if the table doesn't exist.
+            # 仅返回“仍被至少一个文件引用”的块；优先用 FTS5，失败则回退到 LIKE。
+            results = []
             try:
-                # FR-3.2: Query `blocks_fts` virtual table
+                # 使用 blocks_fts + blocks + block_instances 联查过滤孤儿块（即时生效）
                 cursor.execute(
-                    "SELECT content FROM blocks_fts WHERE content MATCH ? LIMIT 10",
-                    (f'"{query_text}"*', ) # Using phrase prefix query
+                    """
+                    SELECT b.content
+                    FROM blocks_fts f
+                    JOIN blocks b ON b.rowid = f.rowid
+                    JOIN block_instances bi ON bi.block_hash = b.hash
+                    WHERE f.content MATCH ?
+                    GROUP BY b.hash
+                    LIMIT 10
+                    """,
+                    (f'"{query_text}"*',)  # 短语前缀
                 )
                 results = [row[0] for row in cursor.fetchall()]
             except sqlite3.OperationalError:
-                # Fallback for when FTS5 is not enabled or table is missing
+                # Fallback: 无 FTS5 或虚表缺失时，用 LIKE + JOIN 过滤孤儿块
                 logging.warning("Falling back to LIKE query for content blocks.")
                 cursor.execute(
-                    "SELECT content FROM blocks WHERE content LIKE ? LIMIT 10",
+                    """
+                    SELECT b.content
+                    FROM blocks b
+                    JOIN block_instances bi ON bi.block_hash = b.hash
+                    WHERE b.content LIKE ?
+                    GROUP BY b.hash
+                    LIMIT 10
+                    """,
                     (f"{query_text}%",)
                 )
                 results = [row[0] for row in cursor.fetchall()]

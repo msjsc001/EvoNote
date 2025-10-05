@@ -23,7 +23,7 @@ from .config_manager import (
     get_nav_history_maxlen,
 )
 
-VERSION = "0.4.5b"
+VERSION = "0.4.7"
 
 class _GlobalShortcutFilter(QObject):
     """
@@ -284,6 +284,10 @@ class EvoNoteApp:
             default_rel = "pages/Note A.md"
             if (new_root / default_rel).exists():
                 GlobalSignalBus.active_page_changed.emit(default_rel)
+                try:
+                    GlobalSignalBus.panel_context_changed.emit(default_rel)
+                except Exception:
+                    pass
         except Exception:
             pass
     def on_page_navigation_requested(self, page_title: str):
@@ -310,6 +314,10 @@ class EvoNoteApp:
             except Exception as e:
                 print(f"WARNING: Failed to enqueue upsert for {abs_path}: {e}")
             GlobalSignalBus.active_page_changed.emit(rel_path)
+            try:
+                GlobalSignalBus.panel_context_changed.emit(rel_path)
+            except Exception:
+                pass
             # 历史入栈：排除由指针移动（后退/前进）触发的导航
             try:
                 if not getattr(self, "_nav_is_pointer_move", False):
@@ -400,6 +408,10 @@ class EvoNoteApp:
                 print(f"WARNING: Failed to enqueue upsert for {abs_path}: {e}")
             # Open independent window
             self._open_note_window(rel_path)
+            try:
+                GlobalSignalBus.panel_context_changed.emit(rel_path)
+            except Exception:
+                pass
         except Exception as e:
             print(f"ERROR: Open-in-new-window failed for '{page_title}': {e}")
 
@@ -424,6 +436,10 @@ class EvoNoteApp:
             dock = QDockWidget(note_name, self.main_window)
             dock.setObjectName(f"note_dock::{rel_path}")  # helpful for future restore
             dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+            try:
+                dock.setAttribute(Qt.WA_DeleteOnClose, True)  # Ensure close() deletes to avoid residual menu entries
+            except Exception:
+                pass
             # Optional: keep default features (closable, floatable, movable)
         except Exception as e:
             print(f"ERROR: Failed to create QDockWidget: {e}")
@@ -441,9 +457,19 @@ class EvoNoteApp:
             except Exception:
                 pass
 
+            # V0.4.6: Configure editor to isolate from global active page and use local navigation
+            try:
+                editor._follow_global_active_page = False
+                editor._handle_navigation_locally = True
+            except Exception:
+                pass
+
             # Load file content into this editor instance only (do not broadcast globally)
             try:
-                editor.on_active_page_changed(rel_path)
+                if hasattr(editor, "_load_page_for_self"):
+                    editor._load_page_for_self(rel_path)
+                else:
+                    editor.on_active_page_changed(rel_path)
             except Exception as e:
                 print(f"WARNING: Failed to load page in new dock: {e}")
 
@@ -468,6 +494,10 @@ class EvoNoteApp:
             except Exception:
                 pass
             dock.show()
+            try:
+                GlobalSignalBus.panel_context_changed.emit(rel_path)
+            except Exception:
+                pass
         except Exception as e:
             print(f"ERROR: Failed to attach dock to main window: {e}")
             try:
@@ -605,6 +635,10 @@ class EvoNoteApp:
         # Broadcast initial active page so panels can request data (only when a vault is active)
         if getattr(self.app_context, "current_vault_path", None):
             GlobalSignalBus.active_page_changed.emit('Note A.md')
+            try:
+                GlobalSignalBus.panel_context_changed.emit('Note A.md')
+            except Exception:
+                pass
         else:
             print("INFO: no active vault, skip initial active_page_changed")
 

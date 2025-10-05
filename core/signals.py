@@ -103,5 +103,16 @@ class _GlobalSignalBus(QObject):
         has_vault (bool): Whether there is an active vault.
         vault_path (str): Current vault absolute path; empty string when none.
     """
+
+    # ---- Panel Context (V0.4.6) ----
+    panel_context_changed = Signal(str)
+    """
+    Emitted when an editor gains focus or performs a local navigation,
+    broadcasting the current page to update panels (e.g., backlinks).
+
+    Args:
+        page_path (str): The current active page path, relative and including extension
+                         (e.g., 'Note A.md').
+    """
 # Instantiate the global bus. Import this instance to connect or emit signals.
 GlobalSignalBus = _GlobalSignalBus()
