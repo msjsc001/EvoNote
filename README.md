@@ -1,4 +1,6 @@
 🚧 注意该项目还在施工中现在不可用 🚧
+<img alt="PixPin_2025-10-05_16-02-25" src="https://github.com/user-attachments/assets/12faec9e-bdcd-448a-bb2d-82e8db298ea1" />
+
 
 # EvoNote - 你的可进化知识与自动化伙伴 🚀
 
