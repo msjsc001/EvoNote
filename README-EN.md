@@ -62,16 +62,29 @@ The soul of EvoNote.
 - **Create on the Fly**: Type `[[A New Concept]]`. If the note doesn't exist, clicking the link will create it for you instantly.
 - **Backlinks**: Open the Right Panel to see **what links to the current note**. This helps you rediscover forgotten connections.
 
-### 3. 🔍 Global Search
+### 3. 🧩 Content Blocks (Sync Magic)
+A unique superpower of EvoNote.
+- **What is a Block?**: Any text wrapped in `{{...}}`.
+- **Sync**:
+    - You write `{{Standard Footer}}` in Note A.
+    - You write `{{Standard Footer}}` in Note B.
+    - They are now **the same block**.
+- **Global Update**:
+    - Edit one instance (e.g., change to `{{New Standard Footer}}`).
+    - EvoNote asks if you want to **Global Update**.
+    - Say "Yes", and EVERY instance in your vault updates instantly.
+    - Perfect for footers, disclaimers, math formulas, or code snippets.
+
+### 4. 🔍 Global Search
 - Click **Search** in the Navigation Panel.
 - Enter keywords (fuzzy match supported).
 - Click results to jump to the exact location with **highlighted keywords**.
 
-### 4. 🧩 Plugins
+### 5. 🧩 Plugins
 - Click the `🧩 Plugins` icon in the status bar to open the Plugin Manager.
 - View loaded plugins. Thanks to the microkernel architecture, almost everything (including the editor) is a plugin.
 
-### 5. 🎨 Customization
+### 6. 🎨 Customization
 - **Theme**: Click `☀️/🌙` in the status bar to toggle Light/Dark mode.
 - **Layout**:
     - **Drag**: All panels (File Tree, Outline, Search) are draggable.
