@@ -436,3 +436,59 @@ def set_nav_history_maxlen(cfg: Dict[str, Any], n: int) -> Dict[str, Any]:
         v = 50
     norm.setdefault("ui", {})["nav_history_maxlen"] = v
     return _normalize_config(norm)
+
+
+# -------- Plugin Configuration (V0.4.7) --------
+
+def get_plugin_config_path() -> Path:
+    """Return full path of plugin_config.json under the config dir."""
+    return get_config_dir() / "plugin_config.json"
+
+
+def load_plugin_config() -> Dict[str, Any]:
+    """
+    Load plugin configuration (enabled/disabled states, load order) from disk.
+    Default structure:
+    {
+        "disabled_plugins": [],
+        "load_order": []
+    }
+    """
+    cfg_path = get_plugin_config_path()
+    default_plugin_cfg = {"disabled_plugins": [], "load_order": []}
+
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            
+            # Basic validation/normalization
+            if not isinstance(raw, dict):
+                raw = {}
+            raw.setdefault("disabled_plugins", [])
+            raw.setdefault("load_order", [])
+            
+            # Ensure lists
+            if not isinstance(raw["disabled_plugins"], list):
+                raw["disabled_plugins"] = []
+            if not isinstance(raw["load_order"], list):
+                raw["load_order"] = []
+                
+            return raw
+        except Exception as e:
+            logging.error(f"Failed to load plugin config; using defaults. Error: {e}")
+            return default_plugin_cfg
+    else:
+        return default_plugin_cfg
+
+
+def save_plugin_config(cfg: Dict[str, Any]) -> None:
+    """Save plugin configuration to plugin_config.json."""
+    cfg_dir = get_config_dir()
+    cfg_path = get_plugin_config_path()
+    try:
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"Failed to save plugin config to {cfg_path}: {e}")

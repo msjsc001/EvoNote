@@ -6,11 +6,12 @@ import sqlite3
 import hashlib
 from PySide6.QtWidgets import QPlainTextEdit, QWidget, QDockWidget, QCompleter, QTextEdit, QPushButton, QHBoxLayout, QLabel, QLineEdit, QToolButton, QStyle
 from pathlib import Path
-from PySide6.QtCore import Slot, Qt, QStringListModel, QTimer
+from PySide6.QtCore import Slot, Qt, QStringListModel, QTimer, QMimeData
 from PySide6.QtGui import QKeyEvent, QInputMethodEvent, QTextCursor, QTextCharFormat, QColor
 from plugins.editor_plugin_interface import EditorPluginInterface
 from core.parsing_service import parse_markdown
 from core.signals import GlobalSignalBus
+from core.image_handler import ImagePasteHandler
 
 
 class TitleBarWidget(QWidget):
@@ -230,7 +231,30 @@ class ReactiveEditor(QPlainTextEdit):
             # Timer init failure should not break editor
             self._autosave_timer = None
         self._autosave_interval_ms = 800
+        self._autosave_interval_ms = 800
         self._last_saved_hash = None
+
+    def insertFromMimeData(self, source: QMimeData):
+        """
+        Override standard paste behavior to intercept images.
+        """
+        if source.hasImage():
+            try:
+                ctx = getattr(self, "app_context", None)
+                idx = getattr(ctx, "file_indexer_service", None) if ctx else None
+                vault = getattr(idx, "vault_path", None) if idx else None
+                
+                if vault:
+                    handler = ImagePasteHandler(str(vault))
+                    md_link = handler.handle_mime_data(source)
+                    if md_link:
+                        self.insertPlainText(md_link)
+                        return
+            except Exception as e:
+                print(f"WARNING: Image paste failed: {e}")
+        
+        # Fallback to default (text/html)
+        super().insertFromMimeData(source)
 
     def keyPressEvent(self, event: QKeyEvent):
         if self.completer.popup().isVisible():

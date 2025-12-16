@@ -12,6 +12,7 @@ from services.file_indexer_service import FileIndexerService
 from services.navigation_history_service import NavigationHistoryService
 from .signals import GlobalSignalBus
 from .api import AppContext
+from .theme import ThemeManager
 from .config_manager import (
     load_config,
     save_config,
@@ -80,13 +81,28 @@ class EvoNoteApp:
     It initializes the Qt application and the main window.
     """
     def __init__(self, qt_app=None):
+        # HiDPI Support (Must be set before QApplication)
+        os.environ["QT_API"] = "pyside6"
+        os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+        
         if qt_app is None:
             self.qt_app = QApplication(sys.argv)
         else:
             self.qt_app = qt_app
+        
+        # Apply visual theme
+        ThemeManager.apply_theme(self.qt_app)
+
+        self.main_window = MainWindow()
         self.main_window = MainWindow()
         self.ui_manager = UIManager(self.main_window)
-        self.plugin_manager = PluginManager()
+        
+        
+        # Check for Safe Mode
+        self.safe_mode = self._check_safe_mode()
+        self.plugin_manager = PluginManager(safe_mode=self.safe_mode)
+        if self.safe_mode:
+            print("INFO: Safe Mode active. Only core plugins will be loaded.")
 
         # Navigation history service (V0.4.5b)
         self._nav_is_pointer_move = False  # 指针移动保护标志
@@ -131,9 +147,11 @@ class EvoNoteApp:
         self.app_context = AppContext(
             self.ui_manager,
             file_indexer_service=self.file_indexer_service,
-            commands=None,
             current_vault_path=(str(vault_for_service) if vault_for_service != Path(".") else None),
         )
+        # Aliases for compatibility where plugins treat 'app' as 'app_context'
+        self.api = self.app_context.api
+        self.ui = self.ui_manager
         # ST-16: Broadcast initial vault availability state
         try:
             has_vault = bool(getattr(self.app_context, "current_vault_path", None))
@@ -151,6 +169,7 @@ class EvoNoteApp:
         GlobalSignalBus.page_open_requested.connect(self.on_page_open_requested)
         GlobalSignalBus.back_navigation_requested.connect(self._on_back_navigation_requested)
         GlobalSignalBus.forward_navigation_requested.connect(self._on_forward_navigation_requested)
+        GlobalSignalBus.plugin_error.connect(self._on_plugin_error)
         
         # Global shortcut: Ctrl+P / Cmd+P to open Command Palette
         self.shortcut_cmd_palette_ctrl = QShortcut(QKeySequence("Ctrl+P"), self.main_window)
@@ -609,6 +628,16 @@ class EvoNoteApp:
         """Reset dialog reference after it is closed to allow reopening."""
         self._cmd_palette_dialog = None
 
+    def _on_plugin_error(self, plugin_id: str, error_msg: str):
+        """Displays plugin errors in the status bar."""
+        msg = f"⚠ Plugin Error [{plugin_id}]: {error_msg}"
+        # Use QMetaObject.invokeMethod to ensure thread safety if signal comes from worker? 
+        # Signals from GlobalSignalBus are usually from main thread for plugins, but indexer is weird.
+        # But connect is direct.
+        self.main_window.statusBar().showMessage(msg, 10000)
+        self.main_window.statusBar().setStyleSheet("color: #FF5555;") # Red text for error warning
+        print(msg)
+
     def run(self):
         """
         Loads plugins, shows the main window, and starts the event loop.
@@ -622,17 +651,28 @@ class EvoNoteApp:
             # Check if the plugin has a get_widget method
             if hasattr(plugin, 'get_widget'):
                 widget = plugin.get_widget()
+
+                widget = plugin.get_widget()
                 if widget:
-                    # Support plugin-specified dock area when available
-                    area = getattr(plugin, 'dock_area', None)
-                    if area is None:
-                        self.ui_manager.add_widget(widget)
-                    else:
-                        self.ui_manager.add_dock_widget(widget, area)
+                    if widget:
+                        # Auto-wrap non-dock widgets (V0.4.7 Fix)
+                        if not isinstance(widget, QDockWidget):
+                            # Try to get a title from the plugin, or use the class name
+                            title = getattr(plugin, 'name', plugin.__class__.__name__)
+                            dock = QDockWidget(title, self.main_window)
+                            dock.setWidget(widget)
+                            dock.setObjectName(f"dock_{plugin.__class__.__name__}")
+                            widget = dock
+
+                        # Support plugin-specified dock area when available
+                        area = getattr(plugin, 'dock_area', None)
+                        if area is None:
+                            self.ui_manager.add_widget(widget)
+                        else:
+                            self.ui_manager.add_dock_widget(widget, area)
         
         self.main_window.show()
  
-        # Broadcast initial active page so panels can request data (only when a vault is active)
         if getattr(self.app_context, "current_vault_path", None):
             GlobalSignalBus.active_page_changed.emit('Note A.md')
             try:
@@ -651,6 +691,60 @@ class EvoNoteApp:
         # Request initial completion list after the UI is fully loaded and shown
         GlobalSignalBus.completion_requested.emit('page_link', '')
         
+        # Golden Layout Enforcement
+        # Basic layout preservation
+        self.main_window.showMaximized()
+        
+        # Try to find specific docks by window title to tabify
+        docks = self.main_window.findChildren(QDockWidget)
+        left_docks = [d for d in docks if self.main_window.dockWidgetArea(d) == Qt.LeftDockWidgetArea]
+        
+        if len(left_docks) > 1:
+            # Tabify all left docks
+            first = left_docks[0]
+            for i in range(1, len(left_docks)):
+                self.main_window.tabifyDockWidget(first, left_docks[i])
+            
+            # Raise "Files" if found
+            for d in left_docks:
+                if "File" in d.windowTitle() or "文件" in d.windowTitle():
+                    d.raise_()
+        
+        # Ensure right docks (Backlinks) are visible
+        right_docks = [d for d in docks if self.main_window.dockWidgetArea(d) == Qt.RightDockWidgetArea]
+        for d in right_docks:
+             d.show()
+
+        # Mark startup as successful (remove crash flag)
+        self._mark_startup_success()
+
         exit_code = self.qt_app.exec()
         self.file_indexer_service.stop()
         return exit_code
+
+    def _check_safe_mode(self) -> bool:
+        """
+        Check if we should enter Safe Mode.
+        Simple logic: if a 'last_run_failed' marker file exists at startup, it means we crashed.
+        """
+        marker = Path(__file__).resolve().parent.parent / "last_run_failed"
+        if marker.exists():
+            print("WARNING: Crash detected from last run. Entering SAFE MODE.")
+            return True
+        # Create marker for this run (will be removed on success)
+        try:
+            with open(marker, "w") as f:
+                f.write("running")
+        except Exception as e:
+            print(f"WARNING: Failed to create crash marker: {e}")
+        return False
+
+    def _mark_startup_success(self):
+        """Remove the crash marker."""
+        marker = Path(__file__).resolve().parent.parent / "last_run_failed"
+        try:
+            if marker.exists():
+                marker.unlink()
+        except Exception:
+            pass
+

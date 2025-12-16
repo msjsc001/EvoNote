@@ -13,6 +13,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from whoosh.index import create_in, open_dir, exists_in
 from whoosh.fields import Schema, TEXT, ID
+from whoosh.qparser import QueryParser
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -90,6 +91,38 @@ class FileIndexerService:
             self.worker_thread = None
 
         logging.info("FileIndexerService stopped.")
+        
+        # Close Whoosh handle
+        if hasattr(self, "whoosh_index"):
+            try:
+                self.whoosh_index.close()
+            except Exception:
+                pass
+
+    def search(self, query_str: str) -> list[dict]:
+        """
+        Perform a full-text search on the vault content.
+        Returns a list of dicts: {'path': str, 'highlights': str}
+        """
+        results = []
+        if not hasattr(self, "whoosh_index"):
+            return results
+            
+        try:
+            with self.whoosh_index.searcher() as searcher:
+                parser = QueryParser("content", self.whoosh_index.schema)
+                query = parser.parse(query_str)
+                hits = searcher.search(query, limit=20)
+                
+                for hit in hits:
+                    results.append({
+                        "path": hit["path"],
+                        "highlights": hit.highlights("content")
+                    })
+        except Exception as e:
+            logging.error(f"Search failed for '{query_str}': {e}")
+        
+        return results
 
     def rebuild_index(self):
         """

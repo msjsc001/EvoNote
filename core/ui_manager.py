@@ -37,3 +37,18 @@ class UIManager:
         :param widget: The QDockWidget instance to add.
         """
         self.add_dock_widget(widget)
+
+    def remove_widget(self, widget: QDockWidget):
+        """
+        V0.4.7: Removes a QDockWidget from the main window.
+        Required for plugin unloading.
+
+        :param widget: The QDockWidget instance to remove.
+        """
+        if not isinstance(widget, QDockWidget):
+            return
+        
+        self._main_window.removeDockWidget(widget)
+        widget.setParent(None)
+        # We don't deleteLater here to allow the plugin to manage lifecycle if needed,
+        # but typically the plugin should handle deletion in on_unload.

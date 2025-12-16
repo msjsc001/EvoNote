@@ -114,5 +114,40 @@ class _GlobalSignalBus(QObject):
         page_path (str): The current active page path, relative and including extension
                          (e.g., 'Note A.md').
     """
+
+    # ---- Plugin Lifecycle (V0.4.7) ----
+    plugin_enable_requested = Signal(str)
+    """
+    Emitted to request enabling a plugin.
+    
+    Args:
+        plugin_id (str): The unique identifier (usually filename or dir name) of the plugin.
+    """
+
+    plugin_disable_requested = Signal(str)
+    """
+    Emitted to request disabling a plugin.
+    
+    Args:
+        plugin_id (str): The unique identifier of the plugin.
+    """
+
+    plugin_state_changed = Signal(str, bool)
+    """
+    Broadcasts when a plugin's state changes (enabled/disabled).
+    
+    Args:
+        plugin_id (str): The unique identifier of the plugin.
+        enabled (bool): True if enabled, False if disabled.
+    """
+
+    plugin_error = Signal(str, str)
+    """
+    Emitted when a plugin encounters a critical error.
+    
+    Args:
+        plugin_id (str): The unique identifier of the plugin (or 'core'/'unknown').
+        error_message (str): A human-readable error description.
+    """
 # Instantiate the global bus. Import this instance to connect or emit signals.
 GlobalSignalBus = _GlobalSignalBus()

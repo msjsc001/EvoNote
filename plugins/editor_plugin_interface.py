@@ -27,3 +27,25 @@ class EditorPluginInterface(ABC):
         主应用程序将把这个小部件集成到其布局中。
         """
         pass
+
+    def on_load(self):
+        """
+        [可选] 插件加载钩子
+        当插件被 PluginManager 加载并初始化后立即调用。
+        用于：
+        - 订阅 GlobalSignalBus 信号
+        - 初始化后台资源
+        """
+        pass
+
+    def on_unload(self):
+        """
+        [可选] 插件卸载钩子
+        当插件被禁用或应用程序关闭前调用。
+        必须：
+        - 断开所有已连接的信号 (disconnect)
+        - 停止所有后台线程/定时器
+        - 清理占用的资源
+        注意：get_widget 返回的组件通常由 UIManager 移除，但插件内部引用需自行清理。
+        """
+        pass
