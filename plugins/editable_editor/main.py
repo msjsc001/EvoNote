@@ -12,6 +12,8 @@ from plugins.editor_plugin_interface import EditorPluginInterface
 from core.parsing_service import parse_markdown
 from core.signals import GlobalSignalBus
 from core.image_handler import ImagePasteHandler
+from core.theme import ThemeManager
+from .highlighter import LivePreviewHighlighter
 
 
 class TitleBarWidget(QWidget):
@@ -233,6 +235,102 @@ class ReactiveEditor(QPlainTextEdit):
         self._autosave_interval_ms = 800
         self._autosave_interval_ms = 800
         self._last_saved_hash = None
+
+        # V0.5.0 Live Preview Highlighter
+        # We need to pass self (editor) to highlighter so it can query cursor
+        try:
+            self.live_highlighter = LivePreviewHighlighter(self.document(), self, ThemeManager.get_rich_text_colors())
+        except Exception as e:
+            logging.warning(f"Failed to init LivePreviewHighlighter: {e}")
+            self.live_highlighter = None
+
+        # V0.5.0 Cursor Optimization: Track block history to only re-highlight relevant blocks
+        self._last_cursor_block_num = 0
+        self.cursorPositionChanged.connect(self._on_cursor_moved)
+        
+        # V0.5.0 Auto-reload on external file modification (e.g., by Global Update)
+        try:
+            import core.signals
+            core.signals.GlobalSignalBus.file_externally_modified.connect(self._on_file_externally_modified)
+        except Exception as e:
+            logging.warning(f"Failed to connect file_externally_modified signal: {e}")
+
+    def _on_cursor_moved(self):
+        """
+        V0.5.0: When cursor moves, we need to refresh the highlighting of:
+        1. The PREVIOUS block (to hide its syntax, since we left it)
+        2. The CURRENT block (to reveal its syntax, since we entered it)
+        
+        With element-level reveal, we need to rehighlight even for within-line moves.
+        """
+        try:
+            if not self.live_highlighter:
+                return
+                
+            cursor = self.textCursor()
+            current_block = cursor.block()
+            current_num = current_block.blockNumber()
+            
+            if current_num != self._last_cursor_block_num:
+                # Re-highlight previous block (Hide Syntax)
+                prev_block = self.document().findBlockByNumber(self._last_cursor_block_num)
+                if prev_block.isValid():
+                    self.live_highlighter.rehighlightBlock(prev_block)
+                
+                self._last_cursor_block_num = current_num
+            
+            # Always rehighlight current block for element-level reveal
+            # This ensures the correct element is revealed based on cursor position
+            self.live_highlighter.rehighlightBlock(current_block)
+        except Exception:
+            pass
+
+    def _on_file_externally_modified(self, modified_path: str):
+        """
+        V0.5.0: Handle external file modification (e.g., by Global Update).
+        If the modified file matches the current editor's file, reload.
+        """
+        try:
+            current_path = getattr(self, "_current_file_path", None)
+            if not current_path:
+                return
+            
+            # Normalize paths for comparison
+            from pathlib import Path
+            current = Path(current_path).resolve()
+            modified = Path(modified_path).resolve()
+            
+            if current == modified:
+                logging.info(f"External modification detected, reloading: {current}")
+                # Save cursor position
+                cursor = self.textCursor()
+                cursor_pos = cursor.position()
+                
+                # Reload content from disk
+                try:
+                    with open(current, "r", encoding="utf-8") as f:
+                        new_content = f.read()
+                except Exception as e:
+                    logging.warning(f"Failed to read file for reload: {e}")
+                    return
+                
+                # Block signals to avoid triggering auto-save
+                self.blockSignals(True)
+                self.setPlainText(new_content)
+                self.blockSignals(False)
+                
+                # Restore cursor position (clamped to new content length)
+                new_cursor = self.textCursor()
+                new_cursor.setPosition(min(cursor_pos, len(new_content)))
+                self.setTextCursor(new_cursor)
+                
+                # Update hash to prevent false dirty detection
+                import hashlib
+                self._last_saved_hash = hashlib.sha256(new_content.encode("utf-8")).hexdigest()
+                
+                logging.info(f"Reloaded editor content for: {current}")
+        except Exception as e:
+            logging.warning(f"_on_file_externally_modified error: {e}")
 
     def insertFromMimeData(self, source: QMimeData):
         """
@@ -610,6 +708,9 @@ class ReactiveEditor(QPlainTextEdit):
  
     def _load_file(self, abs_path: Path):
         """Read UTF-8 file and set editor content. On error, clear content; never crash."""
+        # Store the file path for auto-reload feature (V0.5.0)
+        self._current_file_path = str(abs_path)
+        
         text = ""
         try:
             with open(abs_path, "r", encoding="utf-8") as f:
@@ -971,11 +1072,12 @@ class ReactiveEditor(QPlainTextEdit):
             logging.warning(f"Block existence query failed: {e}")
             exists_elsewhere = False
 
-        # '全局更新' allowed only when referenced in more than one file and new content is not already an existing block
+        # '全局更新' allowed when at least one other file references this block and new content is not already an existing block
+        # Note: refcount >= 1 because current file may not be indexed yet
         try:
-            self._sync_allowed = (refcount > 1) and (not exists_elsewhere)
+            self._sync_allowed = (refcount >= 1) and (not exists_elsewhere)
         except Exception:
-            self._sync_allowed = (refcount > 1) and (not exists_elsewhere)
+            self._sync_allowed = (refcount >= 1) and (not exists_elsewhere)
 
         # Show overlay and update buttons
         self._show_block_overlay()
@@ -996,6 +1098,7 @@ class ReactiveEditor(QPlainTextEdit):
     def _query_block_reference_count(self, block_hash: str) -> int:
         """Return COUNT(DISTINCT file_path) from block_instances (P2-04)."""
         if not block_hash or not getattr(self, "_db_path", None):
+            logging.warning(f"Refcount query skipped: hash={block_hash[:8] if block_hash else None}, db_path={getattr(self, '_db_path', None)}")
             return 0
         try:
             conn = sqlite3.connect(self._db_path)
@@ -1003,7 +1106,9 @@ class ReactiveEditor(QPlainTextEdit):
             cur.execute("SELECT COUNT(DISTINCT file_path) FROM block_instances WHERE block_hash = ?", (block_hash,))
             row = cur.fetchone()
             conn.close()
-            return int(row[0]) if row and row[0] is not None else 0
+            count = int(row[0]) if row and row[0] is not None else 0
+            logging.info(f"Refcount query for {block_hash[:8]}: {count}")
+            return count
         except Exception as e:
             logging.warning(f"Failed to query block_instances: {e}")
             return 0
@@ -1023,6 +1128,8 @@ class ReactiveEditor(QPlainTextEdit):
             btn_cancel = QPushButton("取消", w)
             for b in (btn_sync, btn_new, btn_cancel):
                 b.setCursor(Qt.PointingHandCursor)
+                # Fix: Prevent buttons from stealing focus, which triggers focusOutEvent and auto-commits
+                b.setFocusPolicy(Qt.NoFocus)
                 b.setStyleSheet("QPushButton { color: #fafafa; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.2); padding: 4px 8px; border-radius: 4px; } QPushButton:hover { background: rgba(255,255,255,0.15); }")
 
             layout.addWidget(btn_sync)
@@ -1050,28 +1157,44 @@ class ReactiveEditor(QPlainTextEdit):
         self._reposition_overlay()
 
     def _reposition_overlay(self):
-        """Anchor overlay to just below the end of the modified block (P2-05)."""
+        """Anchor overlay ABOVE the current block to avoid conflict with completion dropdown."""
         try:
             if not self._block_overlay or not self._block_overlay.isVisible() or not self._active_block:
                 return
-            # Use current block end
+            # Use current block start
             span = self._get_current_block_content_and_span()
             if not span:
-                return
-            start, end, _ = span
-            c = QTextCursor(self.document())
-            c.setPosition(end)
-            rect = self.cursorRect(c)
+                # Try fallback from active_block
+                if self._active_block:
+                   start = self._active_block["start"]
+                   c = QTextCursor(self.document())
+                   c.setPosition(start)
+                   rect = self.cursorRect(c)
+                else:
+                   return
+            else:
+                start, end, _ = span
+                c = QTextCursor(self.document())
+                c.setPosition(start) # anchor to start for ABOVE positioning
+                rect = self.cursorRect(c)
+            
             x = max(4, rect.left())
-            y = rect.bottom() + 6
+            
+            # Position ABOVE with extra margin to not obscure previous line
+            oh = self._block_overlay.sizeHint().height()
+            y = rect.top() - oh - 20  # Extra 20px margin
+            
             # Clamp within viewport
             vp = self.viewport().rect()
             ow = self._block_overlay.sizeHint().width()
-            oh = self._block_overlay.sizeHint().height()
+            
             if x + ow > vp.right() - 4:
                 x = max(4, vp.right() - ow - 4)
-            if y + oh > vp.bottom() - 4:
-                y = max(4, vp.bottom() - oh - 4)
+            
+            # If too close to top of viewport, flip to below
+            if y < 4:
+                y = rect.bottom() + 6
+                
             self._block_overlay.move(x, y)
         except Exception:
             pass
@@ -1132,20 +1255,40 @@ class ReactiveEditor(QPlainTextEdit):
     def _on_overlay_sync_clicked(self):
         """[全局更新]: enqueue 'sync_block' task with old_hash and new_content (P2-08)."""
         try:
+            logging.info(f"_on_overlay_sync_clicked called, _sync_allowed={getattr(self, '_sync_allowed', None)}")
             # Safety: if not allowed, ignore click gracefully
             if not bool(getattr(self, "_sync_allowed", False)):
+                logging.warning("Sync not allowed, hiding overlay")
                 self._hide_block_overlay(reset_state=True)
                 return
             current = self._get_current_block_content_and_span()
+            
+            # Robustness: if cursor moved but we have active block, try to find it by span
+            if not current and self._active_block:
+                try:
+                    txt = self.toPlainText()
+                    start = self._active_block["start"]
+                    end = self._active_block["end"]
+                    # Re-verify if this span looks like a block
+                    candidates = self._find_block_span_at_pos(start, txt)
+                    if candidates:
+                        current = candidates
+                except Exception:
+                    pass
+
             if not current or not self._active_block:
+                logging.warning("No current block or active_block, hiding overlay")
                 self._hide_block_overlay(reset_state=True)
                 return
             _, _, new_content = current
             old_hash = self._active_block.get("original_hash")
+            logging.info(f"Sync: old_hash={old_hash[:8] if old_hash else None}, new_content={new_content[:20] if new_content else None}...")
             svc = getattr(getattr(self, "app_context", None), "file_indexer_service", None)
             if svc and hasattr(svc, "task_queue"):
                 svc.task_queue.put({"type": "sync_block", "old_hash": old_hash, "new_content": new_content})
                 logging.info(f"Enqueued sync_block task for {old_hash[:8]}...")
+            else:
+                logging.warning(f"No file_indexer_service or task_queue available for sync")
         except Exception as e:
             logging.warning(f"Failed to enqueue sync_block: {e}")
         self._hide_block_overlay(reset_state=True)

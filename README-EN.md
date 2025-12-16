@@ -6,7 +6,7 @@
 EvoNote is a **local-first**, **bi-directional linking** note-taking application designed for speed, privacy, and extensibility. It combines the power of a digital garden with the comfort of a modern IDE, all while keeping your data in plain text Markdown.
 
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Status](https://img.shields.io/badge/Status-V0.4.8%20(Beta)-orange)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Status](https://img.shields.io/badge/Status-V0.5.0%20(Beta)-orange)
 
 > [!WARNING]
 > **Under Development**: This project is currently in active development. Features and architecture are subject to change. It is **NOT** ready for production use or critical data storage.
@@ -37,7 +37,7 @@ Forget complex Python environment setups. EvoNote's smart bootstrapper (`main.py
 - **Global Search**: Instant full-text search powered by `Whoosh`, accessible via a dedicated Search Panel.
 - **Rich Media**: Paste images directly from your clipboard (`Ctrl+V`). They are auto-saved and linked instantly.
 - **Golden Layout**: A meticulously tuned interface featuring a File Tree (Left), Distraction-Free Editor (Center), and Backlinks/Outliner (Right).
-- **Dark Mode**: A professional, eye-strain-free dark theme with native system fonts.
+- **🆕 Theme Toggle**: Light/Dark mode switch with one click. Preferences are saved automatically.
 - **Navigation Panel**: A floatable, dockable, tab-able navigation bar for organic layout management.
 
 ---
@@ -63,6 +63,26 @@ Forget complex Python environment setups. EvoNote's smart bootstrapper (`main.py
 ---
 
 ## 📅 Changelog
+
+### V0.5.0 - The "Experience Evolution" Update (2025-12-16)
+*Focus: Improving user experience, enhancing editor intelligence, and refining the theme system.*
+
+-   **🎨 Theme Toggle**:
+    -   New status bar button for one-click Light/Dark mode switching.
+    -   Fixed button text visibility issues in dark mode.
+    -   Theme preference is saved and restored on next launch.
+-   **📂 Session Restore**:
+    -   Shift+Click opened note windows now remember their docked positions.
+    -   All open note windows are saved on exit and restored on next launch.
+-   **🔄 Global Update Auto-Refresh**:
+    -   After modifying content blocks and clicking "Global Update", open editors refresh automatically.
+-   **✨ Granular Syntax Highlighting**:
+    -   Markdown syntax is only revealed when cursor is directly on the element.
+-   **🌐 Plugin Manager i18n**:
+    -   Plugin list now shows bilingual (Chinese/English) names and descriptions.
+-   **🐛 Stability Fixes**:
+    -   Fixed Safe Mode infinite loop causing black screen.
+    -   Fixed crash when re-docking floating windows.
 
 ### V0.4.8 - The "Interaction & Polish" Update (2025-12-16)
 *Focus: Fixing UI roughness and establishing a professional baseline.*

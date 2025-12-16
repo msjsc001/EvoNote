@@ -680,7 +680,6 @@ class FileIndexerService:
             new_hash = hashlib.sha256(new_content.encode("utf-8")).hexdigest()
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-
             # Fetch old content by hash
             cursor.execute("SELECT content FROM blocks WHERE hash = ?", (old_hash,))
             row = cursor.fetchone()
@@ -689,6 +688,7 @@ class FileIndexerService:
                 conn.close()
                 return
             old_content = row[0]
+            logging.info(f"sync_block: fetched old_content={repr(old_content)} for hash {old_hash[:8]}")
 
             # Smart merge: ensure new block exists or reuse
             cursor.execute("SELECT 1 FROM blocks WHERE hash = ?", (new_hash,))
@@ -702,7 +702,11 @@ class FileIndexerService:
             logging.info(f"sync_block: {len(files)} files to update for hash {old_hash[:8]}...")
 
             # Prepare regex for exact block replacement (DOTALL to match multi-line)
-            pattern = re.compile(r"\{\{" + re.escape(old_content) + r"\}\}", flags=re.DOTALL)
+            # Use re.escape on the content, but keep {{ }} raw
+            escaped_content = re.escape(old_content)
+            pattern_str = r"\{\{" + escaped_content + r"\}\}"
+            pattern = re.compile(pattern_str, flags=re.DOTALL)
+            logging.info(f"sync_block: regex pattern='{pattern_str}'")
 
             updated_files = 0
             for fp in files:
@@ -721,10 +725,11 @@ class FileIndexerService:
                         updated_files += 1
                         # Enqueue reindex for this file
                         self.task_queue.put({"type": "upsert", "path": fp})
+                        logging.info(f"sync_block: successfully updated {fp} ({n} replacements)")
                     except Exception as e:
                         logging.error(f"sync_block: atomic write failed for {fp}: {e}")
                 else:
-                    logging.info(f"sync_block: no occurrences to replace in {fp}")
+                    logging.info(f"sync_block: no occurrences to replace in {fp}. File content sample: {repr(txt[:50])}...")
 
             # Update block_instances mapping for the affected files (avoid UNIQUE conflicts)
             for fp in files:
@@ -743,6 +748,15 @@ class FileIndexerService:
             conn.commit()
             conn.close()
             logging.info(f"sync_block completed: updated_files={updated_files}, new_hash={new_hash[:8]}...")
+            
+            # Emit signal for each updated file so open editors can reload
+            try:
+                from core.signals import GlobalSignalBus
+                for fp in files:
+                    GlobalSignalBus.file_externally_modified.emit(fp)
+                    logging.info(f"sync_block: emitted file_externally_modified for {fp}")
+            except Exception as e:
+                logging.warning(f"sync_block: failed to emit signals: {e}")
         except Exception as e:
             logging.exception(f"sync_block failed: {e}")
 

@@ -149,5 +149,15 @@ class _GlobalSignalBus(QObject):
         plugin_id (str): The unique identifier of the plugin (or 'core'/'unknown').
         error_message (str): A human-readable error description.
     """
+
+    # ---- File External Modification (V0.5.0) ----
+    file_externally_modified = Signal(str)
+    """
+    Emitted when a file is modified externally (e.g., by Global Update sync_block).
+    Open editors should listen to this and reload if the modified file matches.
+    
+    Args:
+        file_path (str): Absolute path of the modified file.
+    """
 # Instantiate the global bus. Import this instance to connect or emit signals.
 GlobalSignalBus = _GlobalSignalBus()

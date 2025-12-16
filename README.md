@@ -8,7 +8,7 @@ EvoNote 是一款**本地优先**、支持**双向链接**的笔记应用。它�
 [English README](README-EN.md)
 
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Status](https://img.shields.io/badge/Status-V0.4.8%20(Beta)-orange)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Status](https://img.shields.io/badge/Status-V0.5.0%20(Beta)-orange)
 
 > [!WARNING]
 > **开发中 (Under Development)**: 本项目目前仍处于积极开发阶段，核心架构可能随时调整。**暂不推荐**用于生产环境或存储重要数据。请谨慎使用。
@@ -65,6 +65,26 @@ EvoNote 与众不同。它的核心极其微小；**一切皆插件**。
 ---
 
 ## 📅 更新日志
+
+### V0.5.0 - "体验进化" 更新 (2025-12-16)
+*核心目标：提升用户体验，增强编辑器智能化，完善主题系统。*
+
+-   **🎨 主题切换 (Theme Toggle)**:
+    -   新增状态栏主题切换按钮，一键切换亮色/暗色模式。
+    -   修复暗色模式下按钮文字不清晰的问题。
+    -   主题偏好自动保存，下次启动时恢复。
+-   **📂 会话恢复 (Session Restore)**:
+    -   Shift+Click 打开的笔记窗口位置可以被记忆。
+    -   关闭软件时自动保存所有打开的笔记窗口，下次启动时恢复。
+-   **🔄 全局更新自动刷新**:
+    -   修改内容块后点击"全局更新"，已打开的编辑器会自动刷新。
+-   **✨ 精细化语法高亮**:
+    -   光标只在直接悬停在语法元素上时才显示 Markdown 符号。
+-   **🌐 插件管理器双语显示**:
+    -   插件列表现在显示中英文名称和描述。
+-   **🐛 稳定性修复**:
+    -   修复 Safe Mode 无限循环黑屏问题。
+    -   修复停靠窗口拖回主界面时崩溃的问题。
 
 ### V0.4.8 - "交互与打磨" 更新 (2025-12-16)
 *核心目标：修复粗糙的 UI，建立专业软件的基准线。*

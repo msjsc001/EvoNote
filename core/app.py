@@ -22,9 +22,11 @@ from .config_manager import (
     add_vault,
     set_current_vault,
     get_nav_history_maxlen,
+    save_app_state,
+    load_app_state,
 )
 
-VERSION = "0.4.7"
+VERSION = "0.5.0"
 
 class _GlobalShortcutFilter(QObject):
     """
@@ -75,6 +77,30 @@ class MainWindow(QMainWindow):
         # As per FR-1.1, a status bar is required.
         self.statusBar()
 
+    def closeEvent(self, event):
+        """
+        Handle window close event to save state.
+        V0.5.0: Also save list of open note windows for Session Restore.
+        """
+        try:
+            geo = self.saveGeometry().toHex().data().decode()
+            state = self.saveState().toHex().data().decode()
+            
+            # V0.5.0: Collect open note dock paths for Session Restore
+            open_notes = []
+            for dock in self.findChildren(QDockWidget):
+                obj_name = dock.objectName()
+                if obj_name and obj_name.startswith("note_dock::"):
+                    # Extract rel_path from objectName
+                    rel_path = obj_name.replace("note_dock::", "", 1)
+                    if rel_path:
+                        open_notes.append(rel_path)
+            
+            save_app_state(geo, state, open_notes)
+        except Exception as e:
+            print(f"WARNING: Failed to save layout state: {e}")
+        super().closeEvent(event)
+
 class EvoNoteApp:
     """
     The core application class for EvoNote.
@@ -90,10 +116,14 @@ class EvoNoteApp:
         else:
             self.qt_app = qt_app
         
-        # Apply visual theme
-        ThemeManager.apply_theme(self.qt_app)
+        # Apply visual theme (load preference from config)
+        try:
+            cfg = load_config()
+            saved_theme = cfg.get("theme", "dark")
+            ThemeManager.apply_theme(self.qt_app, saved_theme)
+        except Exception:
+            ThemeManager.apply_theme(self.qt_app, "dark")
 
-        self.main_window = MainWindow()
         self.main_window = MainWindow()
         self.ui_manager = UIManager(self.main_window)
         
@@ -455,11 +485,8 @@ class EvoNoteApp:
             dock = QDockWidget(note_name, self.main_window)
             dock.setObjectName(f"note_dock::{rel_path}")  # helpful for future restore
             dock.setAllowedAreas(Qt.AllDockWidgetAreas)
-            try:
-                dock.setAttribute(Qt.WA_DeleteOnClose, True)  # Ensure close() deletes to avoid residual menu entries
-            except Exception:
-                pass
-            # Optional: keep default features (closable, floatable, movable)
+            # NOTE: WA_DeleteOnClose removed - it causes crashes when dock is redocked
+            # Cleanup is handled via destroyed signal in _child_note_windows tracking
         except Exception as e:
             print(f"ERROR: Failed to create QDockWidget: {e}")
             return
@@ -638,10 +665,53 @@ class EvoNoteApp:
         self.main_window.statusBar().setStyleSheet("color: #FF5555;") # Red text for error warning
         print(msg)
 
+    def _enforce_default_layout(self):
+        """
+        Force a standard layout:
+        Left: File Browser, Global Search
+        Center: Editor
+        Right: Backlinks
+        """
+        # Try to find specific docks by window title or object name
+        docks = self.main_window.findChildren(QDockWidget)
+        left_docks = []
+        right_docks = []
+        
+        # Categorize docks based on known plugins or titles
+        for d in docks:
+            title = d.windowTitle()
+            if "File" in title or "文件" in title or "Search" in title or "搜索" in title or "Navigation" in title or "导航" in title:
+                self.main_window.addDockWidget(Qt.LeftDockWidgetArea, d)
+                left_docks.append(d)
+                d.show()
+            elif "Backlinks" in title or "反向链接" in title:
+                self.main_window.addDockWidget(Qt.RightDockWidgetArea, d)
+                right_docks.append(d)
+                d.show()
+            else:
+                # Default others to Left
+                self.main_window.addDockWidget(Qt.LeftDockWidgetArea, d)
+                left_docks.append(d)
+                d.show()
+
+        # Tabify left docks if multiple
+        if len(left_docks) > 1:
+            first = left_docks[0]
+            for i in range(1, len(left_docks)):
+                self.main_window.tabifyDockWidget(first, left_docks[i])
+            
+            # Prioritize File Browser to be top
+            for d in left_docks:
+                if "File" in d.windowTitle() or "文件" in d.windowTitle():
+                    d.raise_()
+
     def run(self):
         """
         Loads plugins, shows the main window, and starts the event loop.
         """
+        # Fix for UnboundLocalError: cannot access local variable 'GlobalSignalBus'
+        global GlobalSignalBus
+        
         self.file_indexer_service.start()
         self.plugin_manager.discover_and_load_plugins(self)
         
@@ -666,6 +736,11 @@ class EvoNoteApp:
 
                         # Support plugin-specified dock area when available
                         area = getattr(plugin, 'dock_area', None)
+                        
+                        # V0.5.0: Ensure ALL docks have objectName for layout persistence
+                        if isinstance(widget, QDockWidget) and not widget.objectName():
+                            widget.setObjectName(f"dock_{plugin.__class__.__name__}")
+                        
                         if area is None:
                             self.ui_manager.add_widget(widget)
                         else:
@@ -673,10 +748,11 @@ class EvoNoteApp:
         
         self.main_window.show()
  
+        import core.signals
         if getattr(self.app_context, "current_vault_path", None):
-            GlobalSignalBus.active_page_changed.emit('Note A.md')
+            core.signals.GlobalSignalBus.active_page_changed.emit('Note A.md')
             try:
-                GlobalSignalBus.panel_context_changed.emit('Note A.md')
+                core.signals.GlobalSignalBus.panel_context_changed.emit('Note A.md')
             except Exception:
                 pass
         else:
@@ -689,31 +765,78 @@ class EvoNoteApp:
             pass
 
         # Request initial completion list after the UI is fully loaded and shown
-        GlobalSignalBus.completion_requested.emit('page_link', '')
+        core.signals.GlobalSignalBus.completion_requested.emit('page_link', '')
         
-        # Golden Layout Enforcement
-        # Basic layout preservation
-        self.main_window.showMaximized()
+        # Restore layout if available (SKIP in Safe Mode)
+        state_loaded = False
+        open_notes_to_restore = []
+        try:
+            if not self.safe_mode:
+                app_state = load_app_state()
+                geo_hex = app_state.get("geometry")
+                state_hex = app_state.get("state")
+                open_notes_to_restore = app_state.get("open_notes", [])
+                
+                # V0.5.0 Session Restore: Create note windows BEFORE restoreState
+                # so Qt can restore their positions correctly
+                for rel_path in open_notes_to_restore:
+                    try:
+                        self._open_note_window(rel_path)
+                        print(f"INFO: Created note window for restore: {rel_path}")
+                    except Exception as e:
+                        print(f"WARNING: Failed to create note window '{rel_path}': {e}")
+                
+                # Now restore state (includes note window positions)
+                if geo_hex and state_hex:
+                    self.main_window.restoreGeometry(bytes.fromhex(geo_hex))
+                    self.main_window.restoreState(bytes.fromhex(state_hex))
+                    state_loaded = True
+                    print("INFO: Restored previous layout.")
+            else:
+                print("INFO: Safe Mode active. Skipping layout restoration to ensure stability.")
+        except Exception as e:
+            print(f"WARNING: Failed to restore layout: {e}")
+
+        # Enforce default layout ONLY if no state was loaded
+        if not state_loaded:
+            self._enforce_default_layout()
+            # Set a reasonable default size instead of Full Screen
+            self.main_window.resize(1280, 800)
+            # Center on screen (basic centering)
+            screen = self.qt_app.primaryScreen().geometry()
+            mw_geo = self.main_window.geometry()
+            x = (screen.width() - mw_geo.width()) // 2
+            y = (screen.height() - mw_geo.height()) // 2
+            self.main_window.move(x, y)
         
-        # Try to find specific docks by window title to tabify
-        docks = self.main_window.findChildren(QDockWidget)
-        left_docks = [d for d in docks if self.main_window.dockWidgetArea(d) == Qt.LeftDockWidgetArea]
-        
-        if len(left_docks) > 1:
-            # Tabify all left docks
-            first = left_docks[0]
-            for i in range(1, len(left_docks)):
-                self.main_window.tabifyDockWidget(first, left_docks[i])
+        self.main_window.show()
+
+        # Start Golden Layout Logic (Resize logic only if default)
+        if not state_loaded:
+            docks = self.main_window.findChildren(QDockWidget)
+            left_docks = [d for d in docks if self.main_window.dockWidgetArea(d) == Qt.LeftDockWidgetArea]
             
-            # Raise "Files" if found
-            for d in left_docks:
-                if "File" in d.windowTitle() or "文件" in d.windowTitle():
-                    d.raise_()
-        
-        # Ensure right docks (Backlinks) are visible
-        right_docks = [d for d in docks if self.main_window.dockWidgetArea(d) == Qt.RightDockWidgetArea]
-        for d in right_docks:
-             d.show()
+            # Set initial sizes for Left Area if present
+            if left_docks:
+                # Try to set width to ~280px
+                self.main_window.resizeDocks(left_docks, [280] * len(left_docks), Qt.Horizontal)
+            
+            if len(left_docks) > 1:
+                # Tabify all left docks
+                first = left_docks[0]
+                for i in range(1, len(left_docks)):
+                    self.main_window.tabifyDockWidget(first, left_docks[i])
+                
+                # Raise "Files" if found
+                for d in left_docks:
+                    if "File" in d.windowTitle() or "文件" in d.windowTitle():
+                        d.raise_()
+            
+            # Ensure right docks (Backlinks) are visible
+            right_docks = [d for d in docks if self.main_window.dockWidgetArea(d) == Qt.RightDockWidgetArea]
+            for d in right_docks:
+                 d.show()
+
 
         # Mark startup as successful (remove crash flag)
         self._mark_startup_success()
@@ -729,7 +852,13 @@ class EvoNoteApp:
         """
         marker = Path(__file__).resolve().parent.parent / "last_run_failed"
         if marker.exists():
-            print("WARNING: Crash detected from last run. Entering SAFE MODE.")
+            print(f"WARNING: Crash detected from last run (marker: {marker}). Entering SAFE MODE.")
+            # Auto-clear marker so we don't loop forever if Safe Mode exits weirdly
+            try:
+                marker.unlink()
+                print("INFO: Crash marker cleared to allow retry.")
+            except Exception as e:
+                print(f"WARNING: Failed to clear crash marker: {e}")
             return True
         # Create marker for this run (will be removed on success)
         try:
@@ -745,6 +874,6 @@ class EvoNoteApp:
         try:
             if marker.exists():
                 marker.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"WARNING: Failed to clear crash marker: {e}")
 

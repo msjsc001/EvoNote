@@ -14,6 +14,101 @@ from PySide6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QFont
 from core.signals import GlobalSignalBus
 from core.config_manager import load_plugin_config
 
+# Plugin Metadata Registry: Bilingual names and descriptions
+PLUGIN_METADATA = {
+    "about_command.py": {
+        "name_cn": "关于",
+        "name_en": "About",
+        "desc_cn": "显示应用程序信息",
+        "desc_en": "Show app information"
+    },
+    "backlink_panel.py": {
+        "name_cn": "反向链接面板",
+        "name_en": "Backlink Panel",
+        "desc_cn": "显示引用当前笔记的所有链接",
+        "desc_en": "Shows all notes linking to current note"
+    },
+    "backlink_service.py": {
+        "name_cn": "反向链接服务",
+        "name_en": "Backlink Service",
+        "desc_cn": "后台计算反向链接",
+        "desc_en": "Backend for backlink computation"
+    },
+    "command_palette_command.py": {
+        "name_cn": "命令面板",
+        "name_en": "Command Palette",
+        "desc_cn": "快捷键命令搜索",
+        "desc_en": "Quick command search (Ctrl+Shift+P)"
+    },
+    "command_service.py": {
+        "name_cn": "命令服务",
+        "name_en": "Command Service",
+        "desc_cn": "命令注册与执行系统",
+        "desc_en": "Command registration system"
+    },
+    "completion_service.py": {
+        "name_cn": "自动补全服务",
+        "name_en": "Completion Service",
+        "desc_cn": "[[链接]] 和 {{内容块}} 自动补全",
+        "desc_en": "Autocomplete for [[links]] and {{blocks}}"
+    },
+    "editable_editor": {
+        "name_cn": "富文本编辑器",
+        "name_en": "Rich Editor",
+        "desc_cn": "核心编辑器，支持实时预览",
+        "desc_en": "Core editor with live preview"
+    },
+    "file_browser_plugin.py": {
+        "name_cn": "文件浏览器",
+        "name_en": "File Browser",
+        "desc_cn": "左侧文件树导航",
+        "desc_en": "Left sidebar file tree navigation"
+    },
+    "global_search": {
+        "name_cn": "全局搜索",
+        "name_en": "Global Search",
+        "desc_cn": "全库全文搜索",
+        "desc_en": "Full-text search across vault"
+    },
+    "navigation_toolbar.py": {
+        "name_cn": "导航工具栏",
+        "name_en": "Navigation Toolbar",
+        "desc_cn": "后退/前进导航历史",
+        "desc_en": "Back/Forward navigation history"
+    },
+    "new_note_command.py": {
+        "name_cn": "新建笔记",
+        "name_en": "New Note",
+        "desc_cn": "快速创建新笔记",
+        "desc_en": "Quickly create new notes"
+    },
+    "plugin_manager": {
+        "name_cn": "插件管理器",
+        "name_en": "Plugin Manager",
+        "desc_cn": "管理插件的启用/禁用",
+        "desc_en": "Enable/disable plugins"
+    },
+    "tool_launcher.py": {
+        "name_cn": "工具启动器",
+        "name_en": "Tool Launcher",
+        "desc_cn": "快速访问常用工具",
+        "desc_en": "Quick access to common tools"
+    },
+}
+
+def get_plugin_display_info(plugin_id: str) -> tuple:
+    """Returns (display_name, description) for a plugin."""
+    meta = PLUGIN_METADATA.get(plugin_id, {})
+    name_cn = meta.get("name_cn", plugin_id)
+    name_en = meta.get("name_en", plugin_id)
+    desc_cn = meta.get("desc_cn", "")
+    desc_en = meta.get("desc_en", "")
+    
+    # Format: "中文名 / English Name"
+    display_name = f"{name_cn} / {name_en}" if name_cn != plugin_id else plugin_id
+    description = f"{desc_cn}\n{desc_en}" if desc_cn else ""
+    return display_name, description
+
 class DropZone(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -60,10 +155,14 @@ class PluginCard(QFrame):
         
         layout = QVBoxLayout(self)
         
+        # Get display info from metadata registry
+        display_name, description = get_plugin_display_info(plugin_id)
+        
         # Header: Name + Switch
         header_layout = QHBoxLayout()
-        name_label = QLabel(plugin_id)
-        name_label.setStyleSheet("font-weight: bold; font-size: 14px; border: none; color: #eeeeee;")
+        name_label = QLabel(display_name)
+        name_label.setStyleSheet("font-weight: bold; font-size: 13px; border: none; color: #eeeeee;")
+        name_label.setWordWrap(True)
         header_layout.addWidget(name_label)
         
         header_layout.addStretch()
@@ -78,6 +177,13 @@ class PluginCard(QFrame):
         header_layout.addWidget(self.status_indicator)
 
         layout.addLayout(header_layout)
+        
+        # Description (if available)
+        if description:
+            desc_label = QLabel(description)
+            desc_label.setStyleSheet("font-size: 11px; color: #888888; border: none;")
+            desc_label.setWordWrap(True)
+            layout.addWidget(desc_label)
         
         # Controls
         controls_layout = QHBoxLayout()

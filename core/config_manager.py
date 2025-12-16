@@ -128,6 +128,12 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if n_int < 1:
         n_int = 50
     out["ui"] = {"toolbar_actions": norm_ta, "nav_history_maxlen": n_int}
+    
+    # Preserve app_state (layout, geometry) if present
+    app_state = cfg.get("app_state")
+    if isinstance(app_state, dict):
+        out["app_state"] = app_state
+    
     return out
 
 
@@ -492,3 +498,31 @@ def save_plugin_config(cfg: Dict[str, Any]) -> None:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logging.error(f"Failed to save plugin config to {cfg_path}: {e}")
+
+# -------- App State (Geometry, Dock Layout) --------
+
+def load_app_state() -> Dict[str, any]:
+    """
+    Load window geometry, state (hex strings), and open notes list.
+    Returns dict with keys: 'geometry', 'state', 'open_notes'.
+    """
+    cfg = load_config()
+    state = cfg.get("app_state", {})
+    return {
+        "geometry": state.get("geometry", ""),
+        "state": state.get("state", ""),
+        "open_notes": state.get("open_notes", [])
+    }
+
+def save_app_state(geometry_hex: str, state_hex: str, open_notes: list = None) -> None:
+    """
+    Save window geometry, state (as hex strings), and open notes list.
+    """
+    cfg = load_config()
+    cfg["app_state"] = {
+        "geometry": geometry_hex,
+        "state": state_hex,
+        "open_notes": open_notes or []
+    }
+    save_config(cfg)
+
