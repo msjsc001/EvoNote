@@ -42,6 +42,44 @@ Forget complex Python environment setups. EvoNote's smart bootstrapper (`main.py
 
 ---
 
+## 📖 Usage Guide
+
+EvoNote is designed around the philosophy: **"WYSIWYG for writing, Bi-directional for thinking."** Here is your core workflow:
+
+### 1. 📝 Creating & Writing
+- **New Note**: Click the `+` button above the File Tree.
+- **Markdown**: Use standard Markdown syntax.
+    - **Headers**: `# H1`, `## H2`...
+    - **Bold/Italic**: `**Bold**`, `*Italic*`
+    - **Lists**: `- Item`, `1. Item`
+    - **Quotes**: `> Blockquote`
+    - **Code**: \`\`\`python ... \`\`\`
+- **WYSIWYG**: Markdown syntax (like `**`) is hidden by default and reveals itself only when your cursor hovers over it, keeping your interface clean.
+
+### 2. 🔗 Bi-Directional Linking
+The soul of EvoNote.
+- **Link**: Type `[[`, and a completion popup will appear. Select a note to link it.
+- **Create on the Fly**: Type `[[A New Concept]]`. If the note doesn't exist, clicking the link will create it for you instantly.
+- **Backlinks**: Open the Right Panel to see **what links to the current note**. This helps you rediscover forgotten connections.
+
+### 3. 🔍 Global Search
+- Click **Search** in the Navigation Panel.
+- Enter keywords (fuzzy match supported).
+- Click results to jump to the exact location with **highlighted keywords**.
+
+### 4. 🧩 Plugins
+- Click the `🧩 Plugins` icon in the status bar to open the Plugin Manager.
+- View loaded plugins. Thanks to the microkernel architecture, almost everything (including the editor) is a plugin.
+
+### 5. 🎨 Customization
+- **Theme**: Click `☀️/🌙` in the status bar to toggle Light/Dark mode.
+- **Layout**:
+    - **Drag**: All panels (File Tree, Outline, Search) are draggable.
+    - **Dock**: Pin them Left, Right, Bottom, or float them as separate windows.
+    - **Persist**: Your layout preference is saved automatically.
+
+---
+
 ## 📥 Getting Started
 
 ### Prerequisites
