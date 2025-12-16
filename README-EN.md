@@ -13,6 +13,7 @@ EvoNote is a **local-first**, **bi-directional linking** note-taking application
 
 
 ---
+<img alt="image" src="https://github.com/user-attachments/assets/5dadc359-c9d9-493e-89ae-44fe6f3870b4" />
 
 ## ✨ Why EvoNote?
 
@@ -25,6 +26,7 @@ EvoNote is built different. The core is tiny; **everything** is a plugin.
 - **Search?** It's a plugin.
 - **Editor?** It's a plugin.
 This ensures the app remains lightweight, modular, and infinitely hackable.
+<img  alt="image" src="https://github.com/user-attachments/assets/812142b1-5e51-4e39-bb0d-f21362d8c484" />
 
 ### 🚀 "Click-to-Run" Simplicity
 Forget complex Python environment setups. EvoNote's smart bootstrapper (`main.py`) automatically detects, installs, and manages its own dependencies. Just double-click and write.
