@@ -12,8 +12,7 @@ EvoNote 是一款**本地优先**、支持**双向链接**的笔记应用。它�
 
 > [!WARNING]
 > **开发中 (Under Development)**: 本项目目前仍处于积极开发阶段，核心架构可能随时调整。**暂不推荐**用于生产环境或存储重要数据。请谨慎使用。
-
-
+<img width="1944" height="1291" alt="image" src="https://github.com/user-attachments/assets/5dadc359-c9d9-493e-89ae-44fe6f3870b4" />
 ---
 
 ## ✨ 为什么选择 EvoNote？
@@ -26,7 +25,8 @@ EvoNote 与众不同。它的核心极其微小；**一切皆插件**。
 - **文件浏览器？** 是插件。
 - **搜索？** 是插件。
 - **编辑器？** 是插件。
-这种设计确保了应用永远轻量、模块化，并且拥有无限的扩展潜力。
+这种设计确保了应用永远轻量、模块化，并且拥有无限的扩展潜力，Python 的天花板就是它的天花板。
+<img width="1204" height="1604" alt="image" src="https://github.com/user-attachments/assets/812142b1-5e51-4e39-bb0d-f21362d8c484" />
 
 ### 🚀 "双击即用" 的极简主义
 忘记复杂的 Python 环境配置吧。EvoNote 的智能启动器 (`main.py`) 会自动检测、安装并管理所需的依赖库。你只需要双击运行，然后开始写作。
