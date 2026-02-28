@@ -157,6 +157,48 @@ A unique superpower of EvoNote.
 
 ---
 
+## 👨‍💻 Developer Guide
+
+Welcome to the EvoNote development! This project is built on pure Python with a microkernel architecture.
+
+### Tech Stack
+- **Core Logic & GUI**: [Python 3.10+](https://www.python.org/) + [PySide6](https://doc.qt.io/qtforpython-6/) (Qt for Python).
+- **Markdown Parsing**: [markdown-it-py](https://github.com/executablebooks/markdown-it-py) (standardized and extensible parser).
+- **Full-Text Search Engine**: [Whoosh](https://whoosh.readthedocs.io/en/latest/) (fast, pure Python search engine).
+- **File System Watcher**: [watchdog](https://github.com/gorakhargosh/watchdog) (real-time response to external Markdown file modifications).
+
+### Project Structure
+```text
+EvoNote/
+├── main.py             # Smart bootstrapper (handles dependencies and entry)
+├── _main_impl.py       # Actual PySide6 application entry point
+├── core/               # Core microkernel (UI manager, config, plugin registration)
+├── plugins/            # Business logic (editor, file tree, search, outline are independent plugins)
+├── services/           # Background services (e.g. Whoosh full-text index daemon)
+├── assets/             # Static resources (icons, QSS stylesheets)
+└── docs/ & scripts/    # Developer documentation and utility scripts
+```
+
+### Core Technologies
+1. **Microkernel & Plugins**: EvoNote is essentially a main window with multiple dock slots. It loads components from the `plugins/` directory via `core.plugin_manager` and docks them into the main UI.
+2. **Event Bus**: The communication between plugins avoids tight coupling. Use Qt's `Signals` (defined in `core/signals.py`) to broadcast and listen to global events (e.g. `file_opened`, `theme_changed`).
+3. **Content Blocks**: Based on identifiers `{{...}}` extraction and seamless cross-file sync replacement through local caching, it serves as one of EvoNote's core innovations for data management.
+
+### Building Executable
+If you wish to package the application as a standalone Windows `.exe` executable (no Python installation required for users):
+
+1. Install PyInstaller:
+   ```bash
+   pip install pyinstaller
+   ```
+2. Run the packaging command from the project root (example):
+   ```bash
+   pyinstaller --name "EvoNote" --windowed --icon=assets/icon.ico _main_impl.py
+   ```
+   *(Note: Since EvoNote is a plugin-based architecture and contains static resources, a complete build might require modifying the `.spec` file to use `--add-data` for `plugins/`, `assets/`, and dependencies. Refer to the PyInstaller documentation for detailed configuration.)*
+
+---
+
 ## 🔮 Roadmap
 
 -   [ ] **Live Preview**: Render Markdown syntax (like `**bold**`, `[[links]]`) instantly (WYSIWYG feel).
