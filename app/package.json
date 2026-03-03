@@ -14,6 +14,7 @@
     "@blocknote/mantine": "^0.47.1",
     "@blocknote/react": "^0.47.1",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-sql": "^2.3.2",
     "localforage": "^1.10.0",

@@ -297,40 +297,161 @@ use std::thread;
 use notify::{Watcher, RecursiveMode, Config};
 use tauri::Emitter;
 
-// 被监听的目标文件路径（由于测试阶段均在 app/src-tauri 启动，所以指定到项目根目录）
-const WATCH_FILE_PATH: &str = "../../evonote_sync.md";
+// ===============================
+// 多文件系统与文件监听驱动程序
+// ===============================
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Default)]
+struct AppConfig {
+    vault_path: Option<String>,
+}
+
+fn get_config_path() -> std::path::PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        Path::new(&appdata).join("EvoNote").join("config.json")
+    } else {
+        Path::new(".").join(".EvoNote").join("config.json")
+    }
+}
+
+fn get_vault_dir() -> std::path::PathBuf {
+    let config_path = get_config_path();
+    if config_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if let Ok(config) = serde_json::from_str::<AppConfig>(&content) {
+                if let Some(path) = config.vault_path {
+                    let p = Path::new(&path);
+                    return p.to_path_buf();
+                }
+            }
+        }
+    }
+    
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        Path::new(&appdata).join("EvoNote").join("Vault")
+    } else {
+        Path::new(".").join(".EvoNote").join("Vault")
+    }
+}
+
+fn scan_md_files(dir: &std::path::Path, prefix: &str, files: &mut Vec<String>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    files.push(format!("{}{}", prefix, name));
+                }
+            }
+        }
+    }
+}
 
 #[tauri::command]
-fn sync_to_markdown(blocks_json: &str, last_write: tauri::State<'_, LastWriteTime>) -> Result<String, String> {
-    println!("[Rust Backend] Received IPC sync_to_markdown with {} chars", blocks_json.len());
+fn get_files() -> Result<Vec<String>, String> {
+    let vault_path = get_vault_dir();
+    let pages_dir = vault_path.join("pages");
+    let journals_dir = vault_path.join("journals");
+    
+    let _ = fs::create_dir_all(&pages_dir);
+    let _ = fs::create_dir_all(&journals_dir);
+    
+    let mut files = Vec::new();
+    // 扫描 root、pages、journals
+    scan_md_files(&vault_path, "", &mut files);
+    scan_md_files(&pages_dir, "pages/", &mut files);
+    scan_md_files(&journals_dir, "journals/", &mut files);
+    
+    files.sort();
+    Ok(files)
+}
+
+#[tauri::command]
+fn load_file(file_name: &str) -> Result<String, String> {
+    let file_path = get_vault_dir().join(file_name);
+    if file_path.exists() {
+        fs::read_to_string(file_path).map_err(|e| format!("读取失败: {}", e))
+    } else {
+        Err("文件不存在".into())
+    }
+}
+
+#[tauri::command]
+fn sync_to_markdown(file_name: &str, blocks_json: &str, last_write: tauri::State<'_, LastWriteTime>) -> Result<String, String> {
+    println!("[Rust Backend] Syncing to {}", file_name);
 
     let blocks: Vec<Value> = serde_json::from_str(blocks_json)
-        .map_err(|e| {
-            println!("[Rust Backend] JSON Parse Error: {}", e);
-            format!("JSON 解析失败: {}", e)
-        })?;
+        .map_err(|e| format!("JSON 解析失败: {}", e))?;
         
     let markdown_output = blocks_to_markdown(&blocks, 0);
-    
-    println!("[Rust Backend] Writing to path: {}", WATCH_FILE_PATH);
+    let file_path = get_vault_dir().join(file_name);
 
-    // 记录写入时间戳，防止文件监听器把我们自己的写入当成"外部修改"
+    // 记录写入时间戳，防止文件监听器触发自循环
     {
         let mut ts = last_write.0.lock().unwrap();
         *ts = Instant::now();
     }
 
-    fs::write(WATCH_FILE_PATH, &markdown_output)
-        .map_err(|e| {
-            println!("[Rust Backend] FS Write Error: {}", e);
-            format!("文件写入失败: {}", e)
-        })?;
+    fs::write(file_path, &markdown_output)
+        .map_err(|e| format!("文件写入失败: {}", e))?;
         
-    println!("[Rust Backend] Successfully wrote {} bytes", markdown_output.len());
     Ok(format!("Successfully synced {} bytes", markdown_output.len()))
 }
 
-// 共享的"最后一次我们自己写入的时间"，用于防止监听器的自触发循环
+#[tauri::command]
+fn get_vault_path() -> String {
+    get_vault_dir().to_string_lossy().to_string()
+}
+
+#[tauri::command]
+fn set_vault_path(new_path: String) -> Result<(), String> {
+    let config_path = get_config_path();
+    if let Some(parent) = config_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    
+    let config = AppConfig {
+        vault_path: Some(new_path.clone()),
+    };
+    
+    let content = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("序列化失败: {}", e))?;
+        
+    fs::write(&config_path, content)
+        .map_err(|e| format!("配置保存失败: {}", e))?;
+    
+    // 初始化子目录
+    let _ = fs::create_dir_all(Path::new(&new_path).join("pages"));
+    let _ = fs::create_dir_all(Path::new(&new_path).join("journals"));
+        
+    Ok(())
+}
+
+use tauri_plugin_opener::OpenerExt;
+
+#[tauri::command]
+fn open_vault_dir(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let path = get_vault_dir();
+    if !path.exists() {
+        let _ = fs::create_dir_all(&path);
+    }
+    app_handle.opener().open_path(path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_file(file_name: &str) -> Result<(), String> {
+    let file_path = get_vault_dir().join(file_name);
+    if file_path.exists() {
+        fs::remove_file(file_path).map_err(|e| format!("文件删除失败: {}", e))
+    } else {
+        Err("文件不存在".into())
+    }
+}
+
+// 共享的"最后一次写入的时间"状态
 struct LastWriteTime(Arc<Mutex<Instant>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -341,65 +462,69 @@ pub fn run() {
         .manage(LastWriteTime(last_write.clone()))
         .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, sync_to_markdown])
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![greet, sync_to_markdown, get_files, load_file, get_vault_path, set_vault_path, open_vault_dir, delete_file])
         .setup(move |app| {
             let handle = app.handle().clone();
             let last_write_clone = last_write.clone();
 
-            // 启动后台文件监听器线程
+            // 启动后台全目录文件监听器线程
             thread::spawn(move || {
-                println!("[Rust Watcher] Starting file watcher on: {}", WATCH_FILE_PATH);
-
-                // 确保被监听的文件存在
-                let watch_path = Path::new(WATCH_FILE_PATH);
-                if !watch_path.exists() {
-                    let _ = fs::write(watch_path, "");
+                let watch_dir = get_vault_dir();
+                if !watch_dir.exists() {
+                    let _ = fs::create_dir_all(&watch_dir);
                 }
+                println!("[Rust Watcher] Starting directory watcher on: {:?}", watch_dir);
 
                 let (tx, rx) = std::sync::mpsc::channel();
 
                 let mut watcher = notify::RecommendedWatcher::new(tx, Config::default())
                     .expect("[Rust Watcher] Failed to create watcher");
 
-                watcher.watch(watch_path, RecursiveMode::NonRecursive)
-                    .expect("[Rust Watcher] Failed to watch file");
+                watcher.watch(&watch_dir, RecursiveMode::Recursive)
+                    .expect("[Rust Watcher] Failed to watch directory");
 
-                println!("[Rust Watcher] File watcher active and listening...");
+                println!("[Rust Watcher] Directory watcher active...");
 
-                // 防抖：忽略 2 秒内"我们自己触发的写入"
                 for res in rx {
                     match res {
                         Ok(event) => {
-                            // 只关注"修改"类型的事件
-                            if event.kind.is_modify() {
+                            if event.kind.is_modify() || event.kind.is_create() {
                                 let elapsed = {
                                     let ts = last_write_clone.lock().unwrap();
                                     ts.elapsed()
                                 };
-
-                                // 如果距离我们自己最后一次写入不到 2 秒，
-                                // 说明这次变更是我们自己触发的，跳过
                                 if elapsed < Duration::from_secs(2) {
                                     continue;
                                 }
 
-                                println!("[Rust Watcher] External modification detected!");
-
-                                // 读取文件最新内容并推送至前端
-                                match fs::read_to_string(WATCH_FILE_PATH) {
-                                    Ok(content) => {
-                                        println!("[Rust Watcher] Emitting md-file-changed event ({} bytes)", content.len());
-                                        let _ = handle.emit("md-file-changed", content);
-                                    },
-                                    Err(e) => {
-                                        println!("[Rust Watcher] Failed to read file: {}", e);
+                                if let Some(path) = event.paths.first() {
+                                    if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
+                                        // 转换为相对路径 (例如 pages/abc.md)
+                                        if let Ok(rel_path) = path.strip_prefix(&watch_dir) {
+                                            let rel_path_str = rel_path.to_string_lossy().replace("\\", "/");
+                                            println!("[Rust Watcher] External modification on {}", rel_path_str);
+                                            match fs::read_to_string(path) {
+                                                Ok(content) => {
+                                                    #[derive(serde::Serialize, Clone)]
+                                                    struct FileChangePayload {
+                                                        file_name: String,
+                                                        content: String,
+                                                    }
+                                                    let payload = FileChangePayload {
+                                                        file_name: rel_path_str,
+                                                        content,
+                                                    };
+                                                    let _ = handle.emit("md-file-changed", payload);
+                                                },
+                                                Err(e) => println!("[Rust Watcher] Read error: {}", e),
+                                            }
+                                        }
                                     }
                                 }
                             }
                         },
-                        Err(e) => {
-                            println!("[Rust Watcher] Watch error: {:?}", e);
-                        }
+                        Err(e) => println!("[Rust Watcher] Watch error: {:?}", e),
                     }
                 }
             });
