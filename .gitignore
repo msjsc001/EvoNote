@@ -1,51 +1,49 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
+# ===========================
+# EvoNote V2 — .gitignore
+# Tauri + React + Rust 技术栈
+# ===========================
 
-# Distribution / Packaging
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+# Node.js
+node_modules/
+npm-debug.log*
 
-# Virtual Environments
-.env
-.venv
-env/
-venv/
-ENV/
+# Vite / Frontend Build
+app/dist/
+
+# Rust / Cargo
+app/src-tauri/target/
 
 # IDE / Editor
 .vscode/
 .idea/
 *.swp
 *.swo
+*.code-workspace
 
-# Application Specific
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Python Legacy (已迁移至 V2 架构)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env/
+*.egg-info/
+
+# Old Application Artifacts
 .EvoNotDB/
 whoosh_index/
 *.log
 last_run_failed
 config.json
-
-# Temporary / Test Files
-test_branch_*.py
-pressure_test.py
-verify_completion_logic.py
 crash_log*.txt
 _app.log
+
+# Test & Temp
+*.bak
+*.tmp
 acceptance_report_*.md
-V0.4.1_Acceptance_Report.md
-acceptance_plan.md
+样本笔记/

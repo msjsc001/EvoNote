@@ -1,4 +1,0 @@
-markdown-it-py
-watchdog
-whoosh
-PySide6
