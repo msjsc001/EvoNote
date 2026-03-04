@@ -48,10 +48,10 @@ function ActualEditor({ initialBlocks, onSave, onCancel }: any) {
 
     return (
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-            <div style={{ flex: 1, minHeight: "150px", maxHeight: "60vh", overflowY: "auto", background: COLORS.surface, borderRadius: "8px", border: `1px solid ${COLORS.border}`, padding: "8px", color: COLORS.text }}>
-                <BlockNoteView editor={editor} theme="dark" formattingToolbar={true} />
+            <div className="evo-edit-modal-editor" style={{ flex: 1, minHeight: "100px", maxHeight: "60vh", overflowY: "auto", background: "transparent", padding: "0" }}>
+                <BlockNoteView editor={editor} theme={document.body.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'} formattingToolbar={true} sideMenu={false} />
             </div>
-            <div style={{ display: "flex", gap: "8px", marginTop: "12px", justifyContent: "flex-end" }}>
+            <div style={{ display: "flex", gap: "8px", marginTop: "8px", justifyContent: "flex-end" }}>
                 <span onClick={onCancel} style={{
                     cursor: "pointer", padding: "6px 16px", borderRadius: "6px", fontSize: "13px",
                     color: COLORS.textMuted, border: `1px solid ${COLORS.border}`,
@@ -94,33 +94,35 @@ function EditModal({ title, subtitle, initialBlocks, onSave, onCancel }: {
     return (
         <div style={{
             position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-            background: "transparent", backdropFilter: "blur(2px)", zIndex: 9999, pointerEvents: "auto",
-        }} onClick={(e) => { e.stopPropagation(); onCancel(); }}>
+            background: "rgba(0,0,0,0.06)", zIndex: 9999, pointerEvents: "auto",
+        }} onMouseDown={(e) => { if (e.target === e.currentTarget) { e.preventDefault(); onCancel(); } }}>
             <div style={{
                 position: "absolute", left: pos.x, top: pos.y,
-                background: "var(--bg-main, #ffffff)", borderRadius: "8px",
-                width: "min(600px, 90vw)", boxShadow: "0 12px 48px rgba(0,0,0,0.15)",
-                border: `1px solid ${COLORS.border}`,
+                background: "var(--bg-main, #ffffff)", borderRadius: "6px",
+                minWidth: "320px", width: "450px", maxWidth: "90vw",
+                boxShadow: "0 4px 24px rgba(0,0,0,0.15)",
+                border: `1px solid var(--border, #e0e0e0)`,
                 display: "flex", flexDirection: "column",
-            }} onClick={(e) => e.stopPropagation()}>
+                resize: "both", overflow: "hidden",
+            }} onMouseDown={(e) => e.stopPropagation()}>
                 {/* 拖拽头部 */}
                 <div
                     onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}
                     style={{
-                        padding: "12px 20px", cursor: isDragging ? "grabbing" : "grab",
-                        borderBottom: `1px solid ${COLORS.border}`, background: "var(--bg-surface, #f8f9fa)",
+                        padding: "8px 12px", cursor: isDragging ? "grabbing" : "grab",
+                        borderBottom: `1px solid var(--border, #e0e0e0)`, background: "var(--bg-surface, #f8f9fa)",
                         display: "flex", justifyContent: "space-between", alignItems: "center",
-                        borderTopLeftRadius: "8px", borderTopRightRadius: "8px",
+                        borderTopLeftRadius: "6px", borderTopRightRadius: "6px",
                     }}
                 >
                     <div>
                         <div style={{ fontSize: "14px", fontWeight: 600, color: COLORS.text }}>{title}</div>
                         <div style={{ fontSize: "11px", color: COLORS.textMuted }}>📄 {subtitle}</div>
                     </div>
-                    <span onClick={onCancel} style={{ cursor: "pointer", color: COLORS.textMuted, fontSize: "16px", padding: "4px" }}>✕</span>
+                    <span onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onCancel(); }} style={{ cursor: "pointer", color: COLORS.textMuted, fontSize: "16px", padding: "4px" }}>✕</span>
                 </div>
                 {/* 编辑区 */}
-                <div style={{ padding: "20px" }}>
+                <div style={{ padding: "8px 12px 12px", flex: 1, overflow: "auto" }}>
                     <ActualEditor initialBlocks={initialBlocks} onSave={onSave} onCancel={onCancel} />
                 </div>
             </div>
@@ -280,46 +282,60 @@ export const BlockRefSpec = createReactInlineContentSpec(
     { render: BlockRefRender }
 );
 
+// ==================== 嵌入块只读大纲渲染器 ====================
+function OutlinePreview({ blocks, depth = 0 }: { blocks: any[]; depth?: number }) {
+    const renderInlineContent = (content: any[]): React.ReactNode[] => {
+        if (!content || !Array.isArray(content)) return [];
+        return content.map((c: any, i: number) => {
+            if (c.type === "text") return <span key={i}>{c.text}</span>;
+            if (c.type === "wikilink") return <span key={i} style={{ color: COLORS.accent }}>{`[[${c.props?.page || ""}]]`}</span>;
+            if (c.type === "blockRef") return <span key={i} style={{ color: COLORS.accent, fontSize: "0.9em" }}>{`((${(c.props?.uuid || "").substring(0, 8)}...))`}</span>;
+            if (c.type === "blockEmbed") return <span key={i} style={{ color: COLORS.textMuted, fontSize: "0.85em" }}>{"📎 嵌入块"}</span>;
+            return <span key={i}>{c.text || ""}</span>;
+        });
+    };
+
+    return (
+        <>
+            {blocks.map((block, i) => {
+                const text = renderInlineContent(block.content);
+                const hasChildren = block.children && block.children.length > 0;
+                return (
+                    <div key={block.id || i} style={{ paddingLeft: depth > 0 ? 20 : 0, lineHeight: 1.7 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                            {depth > 0 && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--text-muted, #6c7086)", flexShrink: 0, display: "inline-block", position: "relative", top: "-1px" }} />}
+                            <span>{text}</span>
+                        </div>
+                        {hasChildren && <OutlinePreview blocks={block.children} depth={depth + 1} />}
+                    </div>
+                );
+            })}
+        </>
+    );
+}
+
 // ==================== BlockEmbed {{embed ((UUID))}} ====================
 function BlockEmbedRender(props: any) {
     const uuid = props.inlineContent.props.uuid;
-    const [content, setContent] = useState<string | null>(null);
-    const [childrenContent, setChildrenContent] = useState<string[]>([]);
     const [filePath, setFilePath] = useState("");
     const [editing, setEditing] = useState(false);
     const [editBlocks, setEditBlocks] = useState<any[] | null>(null);
+    const [embedBlocks, setEmbedBlocks] = useState<any[] | null>(null);
     const [showToolbar, setShowToolbar] = useState(false);
     const [error, setError] = useState(false);
 
     const loadEmbedContent = async () => {
         try {
             const res = await invoke<{ content: string; file_path: string }>("resolve_block_ref", { uuid });
-            setContent(res.content);
             setFilePath(res.file_path);
             const fileContent = await invoke<string>("load_file", { fileName: res.file_path });
             const { markdownToBlocks, findBlockInTree } = await import("./mdParser");
             const ast = markdownToBlocks(fileContent);
             const node = findBlockInTree(ast, uuid);
-            if (node && node.children) {
-                // 递归提取所有的文本内容展示，遇到 uuid 时只取内容
-                const extractText = (blocks: any[], depth: number): string[] => {
-                    let textLines: string[] = [];
-                    for (const b of blocks) {
-                        const prefix = "  ".repeat(depth) + "- ";
-                        let text = "";
-                        if (b.content && Array.isArray(b.content)) {
-                            text = b.content.map((c: any) => c.text || (c.type === "blockRef" ? `(引用: ${c.props.uuid.substring(0, 6)})` : "")).join("");
-                        }
-                        textLines.push(prefix + text);
-                        if (b.children) {
-                            textLines.push(...extractText(b.children, depth + 1));
-                        }
-                    }
-                    return textLines;
-                };
-                setChildrenContent(extractText(node.children, 0));
+            if (node) {
+                setEmbedBlocks([node]);
             } else {
-                setChildrenContent([]);
+                setError(true);
             }
         } catch (e) {
             setError(true);
@@ -375,12 +391,12 @@ function BlockEmbedRender(props: any) {
         );
     }
 
-    if (content === null) {
+    if (!embedBlocks) {
         return (
             <span style={{
                 display: "block", padding: "10px 14px", margin: "4px 0",
-                background: COLORS.surface, borderLeft: `3px solid ${COLORS.border}`,
-                borderRadius: "6px", color: COLORS.textMuted,
+                background: "transparent", border: `1px solid var(--border, #e0e0e0)`,
+                borderRadius: "4px", color: COLORS.textMuted,
             }}>
                 ⏳ 加载嵌入内容...
             </span>
@@ -414,19 +430,9 @@ function BlockEmbedRender(props: any) {
             )}
 
             {/* 内容预览 */}
-            <div style={{ color: "inherited", cursor: "text" }} onDoubleClick={handleEditStart} title="双击编辑">
-                {content}
+            <div onDoubleClick={(e) => { e.stopPropagation(); handleEditStart(); }} style={{ cursor: "default" }} title="双击编辑">
+                <OutlinePreview blocks={embedBlocks} />
             </div>
-            {childrenContent.length > 0 && (
-                <div style={{
-                    marginTop: "8px", paddingTop: "8px",
-                    borderTop: `1px dashed ${COLORS.border}`, fontSize: "0.9em", color: COLORS.textMuted
-                }}>
-                    {childrenContent.map((child, i) => (
-                        <div key={i} style={{ marginBottom: "2px", whiteSpace: "pre-wrap" }}>{child}</div>
-                    ))}
-                </div>
-            )}
             <div style={{
                 marginTop: "4px", fontSize: "10px", color: COLORS.textMuted,
                 opacity: showToolbar ? 1 : 0.5, transition: "opacity 150ms", textAlign: "right",
