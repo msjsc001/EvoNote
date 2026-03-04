@@ -1,8 +1,9 @@
-# EvoNote ◈
+# ◈ EvoNote 
 
 > **让思想自由生长。你的数据，你做主。**
 
 EvoNote 是一款**本地优先 (Local-First)**、**追求丝滑性能的 Markdown 块粒度级大纲双链笔记**桌面应用。基于 Tauri + React + SQLite 的现代混合架构，它将类 Notion 的丝滑编辑体验与纯净的 Markdown 文件存储完美融合——你的数据永远是硬盘上可读的纯文本。
+<img  alt="image" src="https://github.com/user-attachments/assets/c3ca67fb-2f77-48c2-a19d-78e7cfce9427" />
 
 > [!WARNING]
 > - 用爱发电缘故之前 Python + Markdown 的方式，工程量过于庞大不太现实已经放弃，现采用成熟宽松协议的开源项目和胶水代码为主进行开发，力求用极少的开发时间完成高可用性的使用。
