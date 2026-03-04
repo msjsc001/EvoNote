@@ -82,6 +82,26 @@ fn extract_rich_text(content_arr: &Vec<Value>) -> String {
                 };
                 result.push_str(&format!("[{}]({})", link_text, href));
             },
+            "wikilink" => {
+                if let Some(page) = item.get("props").and_then(|p| p.get("page")).and_then(|p| p.as_str()) {
+                    result.push_str(&format!("[[{}]]", page));
+                }
+            },
+            "tag" => {
+                if let Some(tag) = item.get("props").and_then(|p| p.get("tag")).and_then(|p| p.as_str()) {
+                    result.push_str(&format!("#{}", tag));
+                }
+            },
+            "blockRef" => {
+                if let Some(uuid) = item.get("props").and_then(|p| p.get("uuid")).and_then(|p| p.as_str()) {
+                    result.push_str(&format!("(({}))", uuid));
+                }
+            },
+            "blockEmbed" => {
+                if let Some(uuid) = item.get("props").and_then(|p| p.get("uuid")).and_then(|p| p.as_str()) {
+                    result.push_str(&format!("{{{{embed (({}))}}}}", uuid));
+                }
+            },
             _ => {
                 // 其他未知类型保持原样
                 if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
@@ -336,13 +356,23 @@ fn get_vault_dir() -> std::path::PathBuf {
     }
 }
 
-fn scan_md_files(dir: &std::path::Path, prefix: &str, files: &mut Vec<String>) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
+fn scan_vault_tree(dir: &std::path::Path, vault_name: &str, prefix: &str, entries: &mut Vec<String>) {
+    if let Ok(dir_entries) = std::fs::read_dir(dir) {
+        for entry in dir_entries.flatten() {
             let path = entry.path();
-            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
+            if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    files.push(format!("{}{}", prefix, name));
+                    if !name.starts_with('.') {
+                        let dir_relative = format!("{}{}/", prefix, name);
+                        // 发射目录节点自身（保证空目录也能被前端感知）
+                        entries.push(format!("{}/{}", vault_name, dir_relative));
+                        // 继续递归
+                        scan_vault_tree(&path, vault_name, &dir_relative, entries);
+                    }
+                }
+            } else if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    entries.push(format!("{}/{}{}", vault_name, prefix, name));
                 }
             }
         }
@@ -352,25 +382,29 @@ fn scan_md_files(dir: &std::path::Path, prefix: &str, files: &mut Vec<String>) {
 #[tauri::command]
 fn get_files() -> Result<Vec<String>, String> {
     let vault_path = get_vault_dir();
-    let pages_dir = vault_path.join("pages");
-    let journals_dir = vault_path.join("journals");
+    let vault_name = vault_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Vault");
     
-    let _ = fs::create_dir_all(&pages_dir);
-    let _ = fs::create_dir_all(&journals_dir);
+    // 初始化常规子目录（必须在扫描前创建，否则新库连空文件夹都看不到）
+    let _ = fs::create_dir_all(vault_path.join("pages"));
+    let _ = fs::create_dir_all(vault_path.join("journals"));
     
-    let mut files = Vec::new();
-    // 扫描 root、pages、journals
-    scan_md_files(&vault_path, "", &mut files);
-    scan_md_files(&pages_dir, "pages/", &mut files);
-    scan_md_files(&journals_dir, "journals/", &mut files);
+    let mut entries = Vec::new();
+    // 递归全量深度扫描：返回所有 md 文件 + 所有目录节点
+    scan_vault_tree(&vault_path, vault_name, "", &mut entries);
     
-    files.sort();
-    Ok(files)
+    entries.sort();
+    Ok(entries)
 }
 
 #[tauri::command]
 fn load_file(file_name: &str) -> Result<String, String> {
-    let file_path = get_vault_dir().join(file_name);
+    // file_name 格式可能包含 "VaultName/..."，需要剥离第一层
+    let parts: Vec<&str> = file_name.splitn(2, '/').collect();
+    let relative_path = if parts.len() == 2 { parts[1] } else { file_name };
+    
+    let file_path = get_vault_dir().join(relative_path);
     if file_path.exists() {
         fs::read_to_string(file_path).map_err(|e| format!("读取失败: {}", e))
     } else {
@@ -378,15 +412,108 @@ fn load_file(file_name: &str) -> Result<String, String> {
     }
 }
 
+/// 属性合并器：将原文件中的属性行（key:: value）恢复到新生成的 Markdown 中
+/// 策略：提取原文件中每个内容行及其紧随的属性行，在新输出中按内容文本匹配后注入
+fn merge_properties(original: &str, new_output: &str) -> String {
+    let prop_pattern = regex::Regex::new(r"^\s*\S+::\s").unwrap();
+    let orig_lines: Vec<&str> = original.lines().collect();
+    let new_lines: Vec<&str> = new_output.lines().collect();
+
+    // 从原文件提取 "内容行 -> 属性行列表" 的映射
+    // key = 内容文本(trimmed, 去掉列表前缀)
+    let mut prop_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    // 页面级属性（文件头部连续的属性行，不属于任何内容行）
+    let mut page_props: Vec<String> = Vec::new();
+    let mut in_page_header = true;
+
+    let mut i = 0;
+    while i < orig_lines.len() {
+        let line = orig_lines[i];
+
+        // 文件头部的连续属性行 = 页面级属性
+        if in_page_header && prop_pattern.is_match(line) {
+            page_props.push(line.to_string());
+            i += 1;
+            continue;
+        }
+        in_page_header = false;
+
+        if line.trim().is_empty() || prop_pattern.is_match(line) {
+            i += 1;
+            continue;
+        }
+
+        // 当前是内容行，收集紧随的属性行
+        let content_key = line.trim().trim_start_matches("- ").trim_start_matches("* ").to_string();
+        let mut props: Vec<String> = Vec::new();
+        let mut j = i + 1;
+        while j < orig_lines.len() && prop_pattern.is_match(orig_lines[j]) {
+            props.push(orig_lines[j].to_string());
+            j += 1;
+        }
+        if !props.is_empty() {
+            prop_map.insert(content_key, props);
+        }
+        i = j;
+    }
+
+    // 用属性集合标记已使用，避免重复注入
+    let mut used_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut result = String::new();
+
+    // 先注入页面级属性
+    for p in &page_props {
+        result.push_str(p);
+        result.push('\n');
+    }
+
+    for line in &new_lines {
+        result.push_str(line);
+        result.push('\n');
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let content_key = line.trim().trim_start_matches("- ").trim_start_matches("* ").to_string();
+        if !used_keys.contains(&content_key) {
+            if let Some(props) = prop_map.get(&content_key) {
+                for prop_line in props {
+                    result.push_str(prop_line);
+                    result.push('\n');
+                }
+                used_keys.insert(content_key);
+            }
+        }
+    }
+
+    result
+}
+
 #[tauri::command]
 fn sync_to_markdown(file_name: &str, blocks_json: &str, last_write: tauri::State<'_, LastWriteTime>) -> Result<String, String> {
     println!("[Rust Backend] Syncing to {}", file_name);
+
+    let parts: Vec<&str> = file_name.splitn(2, '/').collect();
+    let relative_path = if parts.len() == 2 { parts[1] } else { file_name };
 
     let blocks: Vec<Value> = serde_json::from_str(blocks_json)
         .map_err(|e| format!("JSON 解析失败: {}", e))?;
         
     let markdown_output = blocks_to_markdown(&blocks, 0);
-    let file_path = get_vault_dir().join(file_name);
+    let file_path = get_vault_dir().join(relative_path);
+
+    // 属性保护机制：读取原文件的属性行，保存时合并回去
+    // BlockNote 会丢弃未注册的 props（如 id::, collapsed::），这里从原文件恢复
+    let final_output = if file_path.exists() {
+        if let Ok(original) = fs::read_to_string(&file_path) {
+            merge_properties(&original, &markdown_output)
+        } else {
+            markdown_output.clone()
+        }
+    } else {
+        markdown_output.clone()
+    };
 
     // 记录写入时间戳，防止文件监听器触发自循环
     {
@@ -394,10 +521,10 @@ fn sync_to_markdown(file_name: &str, blocks_json: &str, last_write: tauri::State
         *ts = Instant::now();
     }
 
-    fs::write(file_path, &markdown_output)
+    fs::write(file_path, &final_output)
         .map_err(|e| format!("文件写入失败: {}", e))?;
         
-    Ok(format!("Successfully synced {} bytes", markdown_output.len()))
+    Ok(format!("Successfully synced {} bytes", final_output.len()))
 }
 
 #[tauri::command]
@@ -443,12 +570,270 @@ fn open_vault_dir(app_handle: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn delete_file(file_name: &str) -> Result<(), String> {
-    let file_path = get_vault_dir().join(file_name);
+    let parts: Vec<&str> = file_name.splitn(2, '/').collect();
+    let relative_path = if parts.len() == 2 { parts[1] } else { file_name };
+    
+    let file_path = get_vault_dir().join(relative_path);
     if file_path.exists() {
         fs::remove_file(file_path).map_err(|e| format!("文件删除失败: {}", e))
     } else {
         Err("文件不存在".into())
     }
+}
+
+#[tauri::command]
+fn rename_file(old_name: &str, new_name: &str) -> Result<String, String> {
+    let old_parts: Vec<&str> = old_name.splitn(2, '/').collect();
+    let old_relative = if old_parts.len() == 2 { old_parts[1] } else { old_name };
+
+    let new_parts: Vec<&str> = new_name.splitn(2, '/').collect();
+    let new_relative = if new_parts.len() == 2 { new_parts[1] } else { new_name };
+
+    let vault = get_vault_dir();
+    let old_path = vault.join(old_relative);
+    let new_path = vault.join(new_relative);
+
+    if !old_path.exists() {
+        return Err("源文件不存在".into());
+    }
+    if new_path.exists() {
+        return Err("目标文件已存在".into());
+    }
+    // 确保目标目录存在
+    if let Some(parent) = new_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::rename(&old_path, &new_path)
+        .map_err(|e| format!("重命名失败: {}", e))?;
+    Ok(new_name.to_string())
+}
+
+#[tauri::command]
+fn create_folder(folder_path: &str) -> Result<(), String> {
+    let parts: Vec<&str> = folder_path.splitn(2, '/').collect();
+    let relative_path = if parts.len() == 2 { parts[1] } else { folder_path };
+    // 去掉尾部 /
+    let clean = relative_path.trim_end_matches('/');
+    let full_path = get_vault_dir().join(clean);
+    fs::create_dir_all(&full_path)
+        .map_err(|e| format!("创建文件夹失败: {}", e))
+}
+#[derive(serde::Serialize, Clone)]
+struct SearchMatch {
+    file_path: String,   // "Vault/pages/note.md" 格式
+    line_num: usize,     // 0 = 文件名匹配, >0 = 内容匹配行号
+    line_text: String,   // 匹配行内容预览
+    match_type: String,  // "filename" | "content"
+}
+
+fn collect_md_files(dir: &std::path::Path, vault_name: &str, prefix: &str, out: &mut Vec<(String, std::path::PathBuf)>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if !name.starts_with('.') {
+                        let sub = format!("{}{}/", prefix, name);
+                        collect_md_files(&path, vault_name, &sub, out);
+                    }
+                }
+            } else if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    let id = format!("{}/{}{}", vault_name, prefix, name);
+                    out.push((id, path.clone()));
+                }
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn search_vault(query: &str, is_regex: bool) -> Result<Vec<SearchMatch>, String> {
+    if query.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let vault_path = get_vault_dir();
+    let vault_name = vault_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Vault");
+
+    let mut all_files: Vec<(String, std::path::PathBuf)> = Vec::new();
+    collect_md_files(&vault_path, vault_name, "", &mut all_files);
+
+    let mut results: Vec<SearchMatch> = Vec::new();
+    let max_results = 200; // 防止内存爆炸
+
+    if is_regex {
+        let re = regex::Regex::new(query)
+            .map_err(|e| format!("正则表达式语法错误: {}", e))?;
+
+        for (file_id, file_path) in &all_files {
+            if results.len() >= max_results { break; }
+
+            // 文件名匹配
+            let fname = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if re.is_match(fname) {
+                results.push(SearchMatch {
+                    file_path: file_id.clone(),
+                    line_num: 0,
+                    line_text: fname.to_string(),
+                    match_type: "filename".into(),
+                });
+            }
+
+            // 内容逐行匹配
+            if let Ok(content) = fs::read_to_string(file_path) {
+                for (idx, line) in content.lines().enumerate() {
+                    if results.len() >= max_results { break; }
+                    if re.is_match(line) {
+                        results.push(SearchMatch {
+                            file_path: file_id.clone(),
+                            line_num: idx + 1,
+                            line_text: line.chars().take(200).collect(),
+                            match_type: "content".into(),
+                        });
+                    }
+                }
+            }
+        }
+    } else {
+        let query_lower = query.to_lowercase();
+
+        for (file_id, file_path) in &all_files {
+            if results.len() >= max_results { break; }
+
+            let fname = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if fname.to_lowercase().contains(&query_lower) {
+                results.push(SearchMatch {
+                    file_path: file_id.clone(),
+                    line_num: 0,
+                    line_text: fname.to_string(),
+                    match_type: "filename".into(),
+                });
+            }
+
+            if let Ok(content) = fs::read_to_string(file_path) {
+                for (idx, line) in content.lines().enumerate() {
+                    if results.len() >= max_results { break; }
+                    if line.to_lowercase().contains(&query_lower) {
+                        results.push(SearchMatch {
+                            file_path: file_id.clone(),
+                            line_num: idx + 1,
+                            line_text: line.chars().take(200).collect(),
+                            match_type: "content".into(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// 块引用解析：扫描 Vault 中所有 .md 文件，找到包含 `id:: <uuid>` 的块，返回该块的文本内容
+#[tauri::command]
+fn resolve_block_ref(uuid: &str) -> Result<serde_json::Value, String> {
+    let vault = get_vault_dir();
+    let vault_name = vault.file_name().and_then(|n| n.to_str()).unwrap_or("Vault");
+    let mut all_files: Vec<(String, std::path::PathBuf)> = Vec::new();
+    collect_md_files(&vault, vault_name, "", &mut all_files);
+
+    let id_pattern = format!("id:: {}", uuid);
+
+    for (file_id, file_path) in &all_files {
+        if let Ok(content) = fs::read_to_string(file_path) {
+            let lines: Vec<&str> = content.lines().collect();
+            for (idx, line) in lines.iter().enumerate() {
+                if line.trim() == id_pattern || line.trim().starts_with(&id_pattern) {
+                    // 找到 id:: 行，往上找到对应的内容行
+                    // 内容行是 id:: 行的前一行（同缩进层级的非属性行）
+                    let mut content_line = String::new();
+                    if idx > 0 {
+                        // 向上搜索最近的非属性行
+                        let mut k = idx as i64 - 1;
+                        while k >= 0 {
+                            let prev = lines[k as usize].trim();
+                            // 跳过其他属性行
+                            if prev.contains(":: ") && !prev.starts_with("- ") && !prev.starts_with("# ") {
+                                k -= 1;
+                                continue;
+                            }
+                            // 去掉列表前缀
+                            content_line = if prev.starts_with("- ") {
+                                prev[2..].to_string()
+                            } else {
+                                prev.to_string()
+                            };
+                            break;
+                        }
+                    }
+                    return Ok(serde_json::json!({
+                        "content": content_line,
+                        "file_path": file_id,
+                        "line_num": idx + 1
+                    }));
+                }
+            }
+        }
+    }
+
+    Err(format!("未找到 UUID: {}", uuid))
+}
+
+/// 块内容更新：定位源文件中 UUID 对应的块，替换其文本内容
+#[tauri::command]
+fn update_block_content(uuid: &str, new_content: &str) -> Result<(), String> {
+    let vault = get_vault_dir();
+    let vault_name = vault.file_name().and_then(|n| n.to_str()).unwrap_or("Vault");
+    let mut all_files: Vec<(String, std::path::PathBuf)> = Vec::new();
+    collect_md_files(&vault, vault_name, "", &mut all_files);
+
+    let id_pattern = format!("id:: {}", uuid);
+
+    for (_file_id, file_path) in &all_files {
+        if let Ok(content) = fs::read_to_string(file_path) {
+            let lines: Vec<&str> = content.lines().collect();
+            for (idx, line) in lines.iter().enumerate() {
+                if line.trim() == id_pattern || line.trim().starts_with(&id_pattern) {
+                    if idx > 0 {
+                        // 向上找到内容行
+                        let mut k = idx as i64 - 1;
+                        while k >= 0 {
+                            let prev = lines[k as usize].trim();
+                            if prev.contains(":: ") && !prev.starts_with("- ") && !prev.starts_with("# ") {
+                                k -= 1;
+                                continue;
+                            }
+                            break;
+                        }
+                        if k >= 0 {
+                            let target_idx = k as usize;
+                            let old_line = lines[target_idx];
+                            // 保留原始缩进和列表前缀
+                            let indent_match: String = old_line.chars().take_while(|c| c.is_whitespace()).collect();
+                            let has_bullet = old_line.trim_start().starts_with("- ");
+                            let new_line = if has_bullet {
+                                format!("{}- {}", indent_match, new_content)
+                            } else {
+                                format!("{}{}", indent_match, new_content)
+                            };
+
+                            let mut new_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+                            new_lines[target_idx] = new_line;
+                            let new_file_content = new_lines.join("\n");
+                            fs::write(file_path, new_file_content)
+                                .map_err(|e| format!("写入失败: {}", e))?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err(format!("未找到 UUID: {}", uuid))
 }
 
 // 共享的"最后一次写入的时间"状态
@@ -463,7 +848,7 @@ pub fn run() {
         .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![greet, sync_to_markdown, get_files, load_file, get_vault_path, set_vault_path, open_vault_dir, delete_file])
+        .invoke_handler(tauri::generate_handler![greet, sync_to_markdown, get_files, load_file, get_vault_path, set_vault_path, open_vault_dir, delete_file, rename_file, create_folder, search_vault, resolve_block_ref, update_block_content])
         .setup(move |app| {
             let handle = app.handle().clone();
             let last_write_clone = last_write.clone();
@@ -489,21 +874,32 @@ pub fn run() {
                 for res in rx {
                     match res {
                         Ok(event) => {
-                            if event.kind.is_modify() || event.kind.is_create() {
-                                let elapsed = {
-                                    let ts = last_write_clone.lock().unwrap();
-                                    ts.elapsed()
-                                };
-                                if elapsed < Duration::from_secs(2) {
-                                    continue;
-                                }
+                            let elapsed = {
+                                let ts = last_write_clone.lock().unwrap();
+                                ts.elapsed()
+                            };
+                            // 防抖：忽略自身写入后 2 秒内的事件
+                            if elapsed < Duration::from_secs(2) {
+                                continue;
+                            }
 
+                            let is_structure_change = event.kind.is_create()
+                                || event.kind.is_remove()
+                                || matches!(event.kind, notify::EventKind::Modify(notify::event::ModifyKind::Name(_)));
+
+                            // 结构变化（新增/删除/重命名）→ 通知前端刷新文件树
+                            if is_structure_change {
+                                println!("[Rust Watcher] Structure change: {:?}", event.kind);
+                                let _ = handle.emit("vault-changed", ());
+                            }
+
+                            // 内容变化 → 通知前端热更新文件内容
+                            if event.kind.is_modify() {
                                 if let Some(path) = event.paths.first() {
                                     if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
-                                        // 转换为相对路径 (例如 pages/abc.md)
                                         if let Ok(rel_path) = path.strip_prefix(&watch_dir) {
                                             let rel_path_str = rel_path.to_string_lossy().replace("\\", "/");
-                                            println!("[Rust Watcher] External modification on {}", rel_path_str);
+                                            println!("[Rust Watcher] Content change: {}", rel_path_str);
                                             match fs::read_to_string(path) {
                                                 Ok(content) => {
                                                     #[derive(serde::Serialize, Clone)]

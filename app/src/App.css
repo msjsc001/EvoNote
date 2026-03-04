@@ -162,6 +162,31 @@ body {
   color: var(--text-primary);
 }
 
+/* React Arborist 专属清理与增强 */
+.tree-node:focus,
+.tree-node:focus-visible,
+div[role="treeitem"]:focus,
+div[role="treeitem"]:focus-visible {
+  outline: none !important;
+}
+
+.tree-node:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.04)) !important;
+}
+
+.tree-node.selected {
+  background: var(--primary-fade, rgba(137, 180, 250, 0.12)) !important;
+}
+
+.tree-node-dir {
+  font-weight: 600 !important;
+}
+
+.tree-search-input:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent) !important;
+}
+
 .file-item.active {
   background: var(--bg-active);
   color: var(--accent);
@@ -604,4 +629,12 @@ body.light-theme {
   padding: 12px 16px 4px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+@keyframes flashHighlight {
+  0% { background-color: var(--accent-dim); box-shadow: 0 0 0 2px var(--accent-dim); }
+  100% { background-color: transparent; box-shadow: none; }
+}
+.highlight-flash {
+  animation: flashHighlight 2s ease-out forwards;
+  border-radius: 4px;
 }

@@ -47,14 +47,13 @@ function parseInlineContent(
     if (!text) return [{ type: "text", text: "", styles: {} }];
 
     const result: any[] = [];
-    // 使用正则逐步拆分格式标记
-    const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|~~(.+?)~~|`(.+?)`|\[([^\]]+)\]\(([^)]+)\))/g;
+    // 正则覆盖：**bold**, *italic*, ~~strike~~, `code`, [link](url), [[wikilink]], #tag, ((block-ref)), {{embed ((uuid))}}
+    const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|~~(.+?)~~|`(.+?)`|\[([^\]]+)\]\(([^)]+)\)|\[\[(.+?)\]\]|(?:^|\s)(#[^\s\[\]]+)|(\(\(([a-f0-9-]{36})\)\))|(\{\{embed\s+\(\(([a-f0-9-]{36})\)\)\}\}))/g;
 
     let lastIndex = 0;
     let match;
 
     while ((match = regex.exec(text)) !== null) {
-        // 匹配前的纯文本
         if (match.index > lastIndex) {
             result.push({
                 type: "text",
@@ -82,12 +81,43 @@ function parseInlineContent(
                 href: match[7],
                 content: [{ type: "text", text: match[6], styles: {} }],
             });
+        } else if (match[8]) {
+            // [[wikilink]] → 内部页面链接
+            const pageName = match[8];
+            result.push({
+                type: "wikilink",
+                props: { page: pageName }
+            });
+        } else if (match[9]) {
+            // #tag → 标签链接
+            const rawTag = match[9].trim();
+            const tagName = rawTag.startsWith('#') ? rawTag.slice(1) : rawTag;
+            // 保留 # 前的空格
+            const leadingSpace = match[9].startsWith(' ') || match[9].startsWith('\t') ? ' ' : '';
+            if (leadingSpace) {
+                result.push({ type: "text", text: leadingSpace, styles: {} });
+            }
+            result.push({
+                type: "tag",
+                props: { tag: tagName }
+            });
+        } else if (match[10] && match[11]) {
+            // ((uuid)) → 块引用占位
+            result.push({
+                type: "blockRef",
+                props: { uuid: match[11] }
+            });
+        } else if (match[12] && match[13]) {
+            // {{embed ((uuid))}} → 块嵌入占位
+            result.push({
+                type: "blockEmbed",
+                props: { uuid: match[13] }
+            });
         }
 
         lastIndex = match.index + match[0].length;
     }
 
-    // 末尾纯文本
     if (lastIndex < text.length) {
         result.push({ type: "text", text: text.slice(lastIndex), styles: {} });
     }
@@ -215,6 +245,68 @@ export function markdownToBlocks(markdown: string): BlockNoteBlock[] {
             }
             stack[stack.length - 1].blocks.push(block);
             continue;
+        } else if (/^!\[.*?\]\(.*?\)/.test(trimmed)) {
+            // 图片: ![alt](url) 或 ![alt](url){:height H, :width W}
+            const imgMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)(?:\{:height\s+(\d+),?\s*:width\s+(\d+)\})?/);
+            if (imgMatch) {
+                const alt = imgMatch[1] || '';
+                const url = imgMatch[2];
+                const height = imgMatch[3] ? parseInt(imgMatch[3]) : undefined;
+                const width = imgMatch[4] ? parseInt(imgMatch[4]) : undefined;
+                block = {
+                    id: properties.id || uuidv4(),
+                    type: "image",
+                    props: {
+                        ...properties,
+                        url: url,
+                        caption: alt,
+                        previewWidth: width || 512,
+                        // 保存原始 height/width 以便回写
+                        _imgHeight: height,
+                        _imgWidth: width,
+                    },
+                    content: [],
+                    children: [],
+                };
+            } else {
+                block = {
+                    id: properties.id || uuidv4(),
+                    type: "paragraph",
+                    props: { ...properties },
+                    content: parseInlineContent(trimmed),
+                    children: [],
+                };
+            }
+        } else if (/^- !\[.*?\]\(.*?\)/.test(trimmed)) {
+            // 列表项内的图片: - ![alt](url){...}
+            const inner = trimmed.slice(2);
+            const imgMatch = inner.match(/^!\[([^\]]*)\]\(([^)]+)\)(?:\{:height\s+(\d+),?\s*:width\s+(\d+)\})?/);
+            if (imgMatch) {
+                const url = imgMatch[2];
+                const width = imgMatch[4] ? parseInt(imgMatch[4]) : undefined;
+                block = {
+                    id: properties.id || uuidv4(),
+                    type: "image",
+                    props: {
+                        ...properties,
+                        url: url,
+                        caption: imgMatch[1] || '',
+                        previewWidth: width || 512,
+                        _imgHeight: imgMatch[3] ? parseInt(imgMatch[3]) : undefined,
+                        _imgWidth: width,
+                    },
+                    content: [],
+                    children: [],
+                };
+            } else {
+                block = {
+                    id: properties.id || uuidv4(),
+                    type: "bulletListItem",
+                    props: { ...properties },
+                    content: parseInlineContent(inner),
+                    children: [],
+                };
+            }
         } else {
             // 普通段落
             block = {
@@ -237,9 +329,38 @@ export function markdownToBlocks(markdown: string): BlockNoteBlock[] {
         // 将当前块压入栈（作为潜在的父级）
         stack.push({ indent, blocks: block.children });
 
-        // 跳过已处理的属性行
+        // 跳过当前行及已处理的属性行
         i = j;
     }
 
     return blocks;
+}
+
+export function findBlockInTree(tree: BlockNoteBlock[], targetId: string): BlockNoteBlock | null {
+    for (const node of tree) {
+        if (node.id === targetId) return node;
+        if (node.children && node.children.length > 0) {
+            const found = findBlockInTree(node.children, targetId);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+export function replaceBlockInTree(tree: BlockNoteBlock[], targetId: string, newNodes: BlockNoteBlock[]): boolean {
+    for (let i = 0; i < tree.length; i++) {
+        if (tree[i].id === targetId) {
+            if (newNodes.length > 0) {
+                newNodes[0].id = targetId; // 保持引用的 UUID 不变
+            }
+            tree.splice(i, 1, ...newNodes);
+            return true;
+        }
+        if (tree[i].children && tree[i].children.length > 0) {
+            if (replaceBlockInTree(tree[i].children, targetId, newNodes)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
