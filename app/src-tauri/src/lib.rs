@@ -21,6 +21,10 @@ fn should_skip_prop(key: &str, value: &str) -> bool {
     if BLOCKNOTE_INTERNAL_PROPS.contains(&key) {
         return true;
     }
+    // id 和 collapsed 属性必须被保留，不能用默认值规则过滤
+    if key == "id" || key == "collapsed" {
+        return false;
+    }
     if value.is_empty() || value == "default" || value == "left" {
         return true;
     }
@@ -31,6 +35,9 @@ fn should_skip_prop(key: &str, value: &str) -> bool {
 fn should_skip_prop_value(key: &str, v: &Value) -> bool {
     if BLOCKNOTE_INTERNAL_PROPS.contains(&key) {
         return true;
+    }
+    if key == "id" || key == "collapsed" {
+        return false;
     }
     // 布尔值 false 或数值 0 通常是默认值
     match v {
@@ -475,10 +482,16 @@ fn merge_properties(original: &str, new_output: &str) -> String {
             continue;
         }
 
-        let content_key = line.trim().trim_start_matches("- ").trim_start_matches("* ").to_string();
+        let content_key = line.trim().trim_start_matches("- ").trim_start_matches("* ").trim_start_matches(|c: char| c.is_ascii_digit() || c == '.')
+            .to_string();
         if !used_keys.contains(&content_key) {
             if let Some(props) = prop_map.get(&content_key) {
+                // 如果后端输出了自带的 id:: ，这里就不需要重复注入原 id
                 for prop_line in props {
+                    let is_id = prop_line.trim_start().starts_with("id::");
+                    if is_id && result.contains(&format!("id:: {}", prop_line.trim_start().replace("id:: ", ""))) {
+                        continue;
+                    }
                     result.push_str(prop_line);
                     result.push('\n');
                 }
@@ -856,6 +869,7 @@ pub fn run() {
             // 启动后台全目录文件监听器线程
             thread::spawn(move || {
                 let watch_dir = get_vault_dir();
+                let vault_name = watch_dir.file_name().and_then(|n| n.to_str()).unwrap_or("Vault").to_string();
                 if !watch_dir.exists() {
                     let _ = fs::create_dir_all(&watch_dir);
                 }
@@ -898,7 +912,7 @@ pub fn run() {
                                 if let Some(path) = event.paths.first() {
                                     if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
                                         if let Ok(rel_path) = path.strip_prefix(&watch_dir) {
-                                            let rel_path_str = rel_path.to_string_lossy().replace("\\", "/");
+                                            let rel_path_str = format!("{}/{}", vault_name, rel_path.to_string_lossy().replace("\\", "/"));
                                             println!("[Rust Watcher] Content change: {}", rel_path_str);
                                             match fs::read_to_string(path) {
                                                 Ok(content) => {

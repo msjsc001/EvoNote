@@ -197,10 +197,23 @@ function BlockRefRender(props: any) {
     const [error, setError] = useState(false);
 
     useEffect(() => {
-        if (!uuid) return;
-        invoke<{ content: string; file_path: string }>("resolve_block_ref", { uuid })
-            .then((res) => { setContent(res.content); setFilePath(res.file_path); })
-            .catch(() => setError(true));
+        let currentFile = "";
+        const loadContent = () => {
+            if (!uuid) return;
+            invoke<{ content: string; file_path: string }>("resolve_block_ref", { uuid })
+                .then((res) => { setContent(res.content); setFilePath(res.file_path); currentFile = res.file_path; })
+                .catch(() => setError(true));
+        };
+        loadContent();
+        const onSync = (e: any) => {
+            if (!currentFile || e.detail === currentFile || e.type === "evo-reload") loadContent();
+        };
+        window.addEventListener("evo-block-sync", onSync);
+        window.addEventListener("evo-reload", onSync);
+        return () => {
+            window.removeEventListener("evo-block-sync", onSync);
+            window.removeEventListener("evo-reload", onSync);
+        };
     }, [uuid]);
 
     const handleEditStart = async () => {
@@ -228,6 +241,8 @@ function BlockRefRender(props: any) {
             }
             invoke<{ content: string; file_path: string }>("resolve_block_ref", { uuid }).then(res => setContent(res.content));
             setEditing(false);
+            // 触发全局重载，使当前笔记中其他的同源块及大纲获取到最新编辑状态
+            window.dispatchEvent(new CustomEvent("evo-reload"));
         } catch (e) { console.error("块内容更新失败:", e); }
     };
 
@@ -283,13 +298,39 @@ export const BlockRefSpec = createReactInlineContentSpec(
 );
 
 // ==================== 嵌入块只读大纲渲染器 ====================
+function AsyncBlockRefPreview({ uuid }: { uuid: string }) {
+    const [content, setContent] = useState<string | null>(null);
+    useEffect(() => {
+        let currentFile = "";
+        const loadContent = () => {
+            if (!uuid) return;
+            invoke<{ content: string; file_path: string }>("resolve_block_ref", { uuid })
+                .then((res) => { setContent(res.content); currentFile = res.file_path; })
+                .catch(() => setContent("⚠ 未找到"));
+        };
+        loadContent();
+        const onSync = (e: any) => {
+            if (!currentFile || e.detail === currentFile || e.type === "evo-reload") loadContent();
+        };
+        window.addEventListener("evo-block-sync", onSync);
+        window.addEventListener("evo-reload", onSync);
+        return () => {
+            window.removeEventListener("evo-block-sync", onSync);
+            window.removeEventListener("evo-reload", onSync);
+        };
+    }, [uuid]);
+
+    if (content === null) return <span style={{ color: COLORS.textMuted, fontSize: "0.85em" }}>...</span>;
+    return <span style={{ color: COLORS.accent, cursor: "pointer", background: "rgba(137,180,250,0.1)", padding: "1px 3px", borderRadius: "3px" }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); window.dispatchEvent(new CustomEvent("evo-navigate", { detail: `*#${uuid}` })); }} title="点击跳转">{content}</span>;
+}
+
 function OutlinePreview({ blocks, depth = 0 }: { blocks: any[]; depth?: number }) {
     const renderInlineContent = (content: any[]): React.ReactNode[] => {
         if (!content || !Array.isArray(content)) return [];
         return content.map((c: any, i: number) => {
             if (c.type === "text") return <span key={i}>{c.text}</span>;
             if (c.type === "wikilink") return <span key={i} style={{ color: COLORS.accent }}>{`[[${c.props?.page || ""}]]`}</span>;
-            if (c.type === "blockRef") return <span key={i} style={{ color: COLORS.accent, fontSize: "0.9em" }}>{`((${(c.props?.uuid || "").substring(0, 8)}...))`}</span>;
+            if (c.type === "blockRef") return <AsyncBlockRefPreview key={i} uuid={c.props?.uuid} />;
             if (c.type === "blockEmbed") return <span key={i} style={{ color: COLORS.textMuted, fontSize: "0.85em" }}>{"📎 嵌入块"}</span>;
             return <span key={i}>{c.text || ""}</span>;
         });
@@ -324,27 +365,39 @@ function BlockEmbedRender(props: any) {
     const [showToolbar, setShowToolbar] = useState(false);
     const [error, setError] = useState(false);
 
-    const loadEmbedContent = async () => {
-        try {
-            const res = await invoke<{ content: string; file_path: string }>("resolve_block_ref", { uuid });
-            setFilePath(res.file_path);
-            const fileContent = await invoke<string>("load_file", { fileName: res.file_path });
-            const { markdownToBlocks, findBlockInTree } = await import("./mdParser");
-            const ast = markdownToBlocks(fileContent);
-            const node = findBlockInTree(ast, uuid);
-            if (node) {
-                setEmbedBlocks([node]);
-            } else {
+    useEffect(() => {
+        let currentFile = "";
+        const loadContent = async () => {
+            try {
+                const res = await invoke<{ content: string; file_path: string }>("resolve_block_ref", { uuid });
+                setFilePath(res.file_path);
+                currentFile = res.file_path;
+                const fileContent = await invoke<string>("load_file", { fileName: res.file_path });
+                const { markdownToBlocks, findBlockInTree } = await import("./mdParser");
+                const ast = markdownToBlocks(fileContent);
+                const node = findBlockInTree(ast, uuid);
+                if (node) {
+                    setEmbedBlocks([node]);
+                } else {
+                    setError(true);
+                }
+            } catch (e) {
                 setError(true);
             }
-        } catch (e) {
-            setError(true);
-        }
-    };
+        };
 
-    useEffect(() => {
         if (!uuid) return;
-        loadEmbedContent();
+        loadContent();
+
+        const onSync = (e: any) => {
+            if (!currentFile || e.detail === currentFile || e.type === "evo-reload") loadContent();
+        };
+        window.addEventListener("evo-block-sync", onSync);
+        window.addEventListener("evo-reload", onSync);
+        return () => {
+            window.removeEventListener("evo-block-sync", onSync);
+            window.removeEventListener("evo-reload", onSync);
+        };
     }, [uuid]);
 
     const handleEditStart = async () => {
@@ -370,8 +423,8 @@ function BlockEmbedRender(props: any) {
             if (replaceBlockInTree(ast, uuid, newBlocks)) {
                 await invoke("sync_to_markdown", { fileName: filePath, blocksJson: JSON.stringify(ast) });
             }
-            loadEmbedContent(); // 重新加载整树预览
             setEditing(false);
+            window.dispatchEvent(new CustomEvent("evo-reload"));
         } catch (e) { console.error("嵌入块更新失败:", e); }
     };
 

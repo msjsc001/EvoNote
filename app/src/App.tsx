@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import "@blocknote/core/fonts/inter.css";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
@@ -74,12 +74,33 @@ function EditorArea({
   targetBlockId: string | null
 }) {
   const isExternalUpdate = useRef(false);
+  const initialLoadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isReadyForEdit = useRef(false);
+
+  const fullAstRef = useRef<any>(JSON.parse(JSON.stringify(initialContent)));
+  const zoomSubtree = useMemo(() => {
+    if (targetBlockId) {
+      const { findBlockInTree } = require("./mdParser");
+      const node = findBlockInTree(initialContent, targetBlockId);
+      return node ? [node] : initialContent;
+    }
+    return initialContent;
+  }, [targetBlockId, initialContent]);
 
   // 这里的 initialContent 里包含了我们在 mdParser 塞进去的含有 Logseq 属性的 raw blocks。
   const editor = useCreateBlockNote({
-    initialContent: initialContent as any,
+    initialContent: zoomSubtree as any,
     schema: customSchema as any
   });
+
+  useEffect(() => {
+    isReadyForEdit.current = false;
+    fullAstRef.current = JSON.parse(JSON.stringify(initialContent));
+    initialLoadTimer.current = setTimeout(() => {
+      isReadyForEdit.current = true;
+    }, 1200);
+    return () => { if (initialLoadTimer.current) clearTimeout(initialLoadTimer.current); }
+  }, [file]);
 
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -88,13 +109,25 @@ function EditorArea({
 
   useEffect(() => {
     const unlisten = listen<{ file_name: string, content: string }>("md-file-changed", (event) => {
+      window.dispatchEvent(new CustomEvent("evo-block-sync", { detail: event.payload.file_name }));
       if (event.payload.file_name === file) {
         try {
           const newBlocks = markdownToBlocks(event.payload.content);
           if (newBlocks.length > 0) {
+            fullAstRef.current = newBlocks;
+            let nextBlocks = newBlocks;
+            if (targetBlockId) {
+              const { findBlockInTree } = require("./mdParser");
+              const node = findBlockInTree(newBlocks, targetBlockId);
+              if (node) nextBlocks = [node] as any;
+            }
             isExternalUpdate.current = true;
-            editor.replaceBlocks(editor.document, newBlocks as any);
-            setTimeout(() => { isExternalUpdate.current = false; }, 1000);
+            isReadyForEdit.current = false;
+            editor.replaceBlocks(editor.document, nextBlocks as any);
+            setTimeout(() => {
+              isExternalUpdate.current = false;
+              isReadyForEdit.current = true;
+            }, 1000);
           }
         } catch (err) { }
       } else {
@@ -105,11 +138,36 @@ function EditorArea({
     const onEvoNavigate = (e: any) => {
       onNavigate(e.detail);
     };
+
+    const onEvoReload = async () => {
+      try {
+        const content = await invoke<string>("load_file", { fileName: file });
+        const newBlocks = markdownToBlocks(content);
+        fullAstRef.current = newBlocks;
+        let nextBlocks = newBlocks;
+        if (targetBlockId) {
+          const { findBlockInTree } = require("./mdParser");
+          const node = findBlockInTree(newBlocks, targetBlockId);
+          if (node) nextBlocks = [node] as any;
+        }
+        isExternalUpdate.current = true;
+        isReadyForEdit.current = false;
+        editor.replaceBlocks(editor.document, nextBlocks as any);
+        setTimeout(() => {
+          isExternalUpdate.current = false;
+          isReadyForEdit.current = true;
+        }, 1000);
+      } catch (err) { }
+      refreshSidebar();
+    };
+
     window.addEventListener('evo-navigate', onEvoNavigate);
+    window.addEventListener('evo-reload', onEvoReload);
 
     return () => {
       unlisten.then(fn => fn());
       window.removeEventListener('evo-navigate', onEvoNavigate);
+      window.removeEventListener('evo-reload', onEvoReload);
     };
   }, [file]);
 
@@ -121,8 +179,6 @@ function EditorArea({
         const el = document.querySelector(`[data-id="${targetBlockId}"]`);
         if (el && scrollRef.current) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          el.classList.add('highlight-flash');
-          setTimeout(() => el.classList.remove('highlight-flash'), 2000);
         }
       }, 150);
     } else if (file && scrollRef.current) {
@@ -184,7 +240,7 @@ function EditorArea({
   };
 
   const handleChange = () => {
-    if (isExternalUpdate.current) return;
+    if (isExternalUpdate.current || !isReadyForEdit.current) return;
 
     try {
       const cursorInfo = editor.getTextCursorPosition();
@@ -228,7 +284,17 @@ function EditorArea({
 
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
-      onSaveRequest(JSON.stringify(editor.document));
+      let finalAst = editor.document as any[];
+      if (targetBlockId) {
+        const { replaceBlockInTree } = require("./mdParser");
+        const clone = JSON.parse(JSON.stringify(fullAstRef.current));
+        if (replaceBlockInTree(clone, targetBlockId, finalAst)) {
+          finalAst = clone;
+        }
+      } else {
+        fullAstRef.current = finalAst;
+      }
+      onSaveRequest(JSON.stringify(finalAst));
     }, 500);
   };
 
@@ -329,6 +395,19 @@ function EditorArea({
           )}
         </div>
       )}
+
+      {targetBlockId && (
+        <div className="breadcrumb" style={{ padding: '8px 40px', background: 'var(--surface0, #313244)', borderBottom: '1px solid var(--surface1, #45475a)', display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+          <span style={{ cursor: 'pointer', color: 'var(--text-muted, #6c7086)' }} onClick={() => onNavigate(file)}>
+            📄 {file.split('/').pop()?.replace('.md', '')}
+          </span>
+          <span style={{ color: 'var(--text-muted)' }}>/</span>
+          <span style={{ fontWeight: '500', color: 'var(--accent, #89b4fa)' }}>
+            📍 局部视图 ({targetBlockId.substring(0, 8)})
+          </span>
+        </div>
+      )}
+
       <div style={{ flex: 1, overflowY: 'auto' }} onClick={handleEditorClick} ref={scrollRef} onScroll={handleScroll}>
         <BlockNoteView editor={editor} onChange={handleChange} theme={theme} formattingToolbar={true} />
       </div>
@@ -347,7 +426,6 @@ function App() {
   const [navHistory, setNavHistory] = useState<string[]>([]);
   const [navIndex, setNavIndex] = useState(-1);
   const [targetBlockId, setTargetBlockId] = useState<string | null>(null);
-  const [fileRevision, setFileRevision] = useState(0); // 用于强制 EditorArea 重新挂载
 
   const navigateTo = useCallback((filePath: string) => {
     let resolvedPath = filePath;
@@ -356,9 +434,9 @@ function App() {
       [resolvedPath, hash] = filePath.split("#");
     }
 
-    if (!files.includes(filePath)) {
+    if (!files.includes(resolvedPath)) {
       // 尝试在文件列表中模糊匹配
-      const match = files.find(f => f.endsWith('/' + filePath) || f.endsWith('/' + filePath.replace(/^pages\//, '')));
+      const match = files.find(f => f.endsWith('/' + resolvedPath) || f.endsWith('/' + resolvedPath.replace(/^pages\//, '')));
       if (match) {
         resolvedPath = match;
       } else {
@@ -440,9 +518,7 @@ function App() {
         await database.execute(
           "CREATE TABLE IF NOT EXISTS files_cache (file_path TEXT PRIMARY KEY, content TEXT)"
         );
-        // 建表后，为了强制应用新的 mdParser Schema 解析，清空现有的所有毒缓存
-        await database.execute("DELETE FROM files_cache");
-        console.log("已清表，强制应用最新自定义 Schema 解析");
+        // 不再暴力清表，保持十毫秒级启动速度
 
         setDb(database);
       } catch (e) {
@@ -543,7 +619,7 @@ function App() {
     }
 
     loadContent();
-  }, [db, currentFile, fileRevision]); // Add fileRevision to trigger reload
+  }, [db, currentFile]);
 
   // 提供给子树的原生创建接口 (Inline Creation 回调)
   const createNoteFromTree = async (parentId: string, name: string) => {
@@ -789,7 +865,7 @@ function App() {
           <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
             {currentFile && initialContent !== "loading" ? (
               <EditorArea
-                key={`${currentFile}-${fileRevision}`} // Ensure fresh unmount on revision change
+                key={currentFile || "editor"}
                 file={currentFile}
                 initialContent={initialContent}
                 targetBlockId={targetBlockId}
