@@ -549,3 +549,59 @@ body {
   cursor: not-allowed;
   background: var(--bg-app);
 }
+
+/* ===== 浅色主题支持 ===== */
+body.light-theme {
+  --bg-primary: #f4f5f7;
+  --bg-secondary: #ebecf0;
+  --bg-surface: #ffffff;
+  --bg-hover: #e0e2e7;
+  --bg-active: #d6d9e0;
+  --text-primary: #172b4d;
+  --text-secondary: #42526e;
+  --text-muted: #8993a4;
+  --accent: #0052cc;
+  --accent-hover: #0747a6;
+  --border: rgba(9, 30, 66, 0.1);
+  --border-strong: rgba(9, 30, 66, 0.15);
+  --shadow-sm: 0 1px 2px rgba(9, 30, 66, 0.1);
+  --shadow-md: 0 4px 12px rgba(9, 30, 66, 0.08);
+}
+
+.new-note-btn-global {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  margin: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  transition: opacity var(--transition), transform var(--transition);
+  box-shadow: var(--shadow-sm);
+}
+
+.new-note-btn-global:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.sidebar-scroll-area {
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+}
+
+.sidebar-folder-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 12px 16px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
