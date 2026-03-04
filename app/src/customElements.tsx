@@ -98,8 +98,8 @@ function EditModal({ title, subtitle, initialBlocks, onSave, onCancel }: {
         }} onClick={(e) => { e.stopPropagation(); onCancel(); }}>
             <div style={{
                 position: "absolute", left: pos.x, top: pos.y,
-                background: "#1e1e2e", borderRadius: "12px",
-                width: "min(600px, 90vw)", boxShadow: "0 12px 48px rgba(0,0,0,0.4)",
+                background: "var(--bg-main, #ffffff)", borderRadius: "8px",
+                width: "min(600px, 90vw)", boxShadow: "0 12px 48px rgba(0,0,0,0.15)",
                 border: `1px solid ${COLORS.border}`,
                 display: "flex", flexDirection: "column",
             }} onClick={(e) => e.stopPropagation()}>
@@ -108,9 +108,9 @@ function EditModal({ title, subtitle, initialBlocks, onSave, onCancel }: {
                     onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}
                     style={{
                         padding: "12px 20px", cursor: isDragging ? "grabbing" : "grab",
-                        borderBottom: `1px solid ${COLORS.border}`, background: "rgba(255,255,255,0.03)",
+                        borderBottom: `1px solid ${COLORS.border}`, background: "var(--bg-surface, #f8f9fa)",
                         display: "flex", justifyContent: "space-between", alignItems: "center",
-                        borderTopLeftRadius: "12px", borderTopRightRadius: "12px",
+                        borderTopLeftRadius: "8px", borderTopRightRadius: "8px",
                     }}
                 >
                     <div>
@@ -389,10 +389,10 @@ function BlockEmbedRender(props: any) {
 
     return (
         <span className="evo-block-embed" style={{
-            display: "block", padding: "10px 14px", margin: "6px 0",
-            background: COLORS.surface,
-            borderLeft: `3px solid ${COLORS.accent}`,
-            borderRadius: "6px", position: "relative",
+            display: "block", padding: "6px 14px", margin: "4px 0",
+            background: "transparent",
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: "4px", position: "relative",
             transition: "box-shadow 150ms",
             boxShadow: showToolbar ? `0 0 0 1px ${COLORS.accent}40` : "none",
         }} onMouseEnter={() => setShowToolbar(true)} onMouseLeave={() => setShowToolbar(false)}>
@@ -414,7 +414,7 @@ function BlockEmbedRender(props: any) {
             )}
 
             {/* 内容预览 */}
-            <div style={{ color: COLORS.text, fontWeight: 500, lineHeight: 1.6 }} onDoubleClick={handleEditStart} title="双击编辑">
+            <div style={{ color: "inherited", cursor: "text" }} onDoubleClick={handleEditStart} title="双击编辑">
                 {content}
             </div>
             {childrenContent.length > 0 && (
